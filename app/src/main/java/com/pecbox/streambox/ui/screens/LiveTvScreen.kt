@@ -23,7 +23,7 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
+import com.pecbox.streambox.ui.components.SbTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -102,7 +102,7 @@ fun LiveTvScreen(nav: Nav) {
                 Chip("Jellyfin", selected = tab == 0, onClick = { tabChoice = 0; group = "" })
                 Chip("Minha lista", selected = tab == 1, onClick = { tabChoice = 1; group = "" })
             }
-            OutlinedTextField(
+            SbTextField(
                 value = filter, onValueChange = { filter = it }, singleLine = true,
                 placeholder = { Text("Filtrar canais…") }, leadingIcon = { Icon(Icons.Filled.Search, null) },
                 modifier = Modifier.fillMaxWidth().widthIn(max = 560.dp),
@@ -219,7 +219,7 @@ private fun ExternalChannels(group: String, onGroup: (String) -> Unit, filter: S
                             nowTime = cur?.let { "${hhmm(it.start)} – ${hhmm(it.stop)}" },
                             progress = cur?.progress(now) ?: 0f,
                             nextTitle = next?.let { "${hhmm(it.start)} ${it.title}" },
-                            onClick = { ctx.playExternalChannel(ch.name, ch.url) },
+                            onClick = { ctx.playExternalChannel(ch.name, ch.url, ch.userAgent, ch.referer) },
                         )
                     }
                 }

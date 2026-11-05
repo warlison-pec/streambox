@@ -1,5 +1,10 @@
 package com.pecbox.streambox.ui.screens
 
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.layout.BoxWithConstraints
 import android.content.Context
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.tween
@@ -139,16 +144,30 @@ private fun focusOf(onFocus: ((Item) -> Unit)?, item: Item): (() -> Unit)? =
     if (onFocus == null) null else ({ onFocus(item) })
 
 /** Fileiras da tela inicial. [onFocus] recebe o item em foco (TV). */
-private fun LazyListScope.homeRows(data: HomeData, nav: Nav, ctx: Context, onFocus: ((Item) -> Unit)?) {
+/**
+ * Tamanho das fileiras na TV: [poster] = altura da capa; [rowFocus] recebe o índice da fileira
+ * que ganhou foco (para subir essa fileira até o topo da área de baixo, sem cortar as capas).
+ */
+private class TvRows(val poster: Dp, val endSpace: Dp, val rowFocus: (Int) -> Unit)
+
+private fun Modifier.rowFocus(tv: TvRows?, index: Int): Modifier =
+    if (tv == null) this else onFocusChanged { if (it.hasFocus) tv.rowFocus(index) }
+
+private fun LazyListScope.homeRows(data: HomeData, nav: Nav, ctx: Context, onFocus: ((Item) -> Unit)?, tvRows: TvRows? = null) {
     val jf = App.session.jellyfin
+    val text = tvRows == null
+    val topPad = if (tvRows != null) 6.dp else 18.dp
+    // capas: altura calculada pela tela na TV; no celular, larguras fixas como antes
+    val posterW = tvRows?.let { it.poster * 2f / 3f }
+    val wideW = tvRows?.let { it.poster * 0.82f * 16f / 9f }
     item {
         val tv = LocalIsTv.current
-        MediaRow("Continuar assistindo", data.resume) {
+        MediaRow("Continuar assistindo", data.resume, Modifier.rowFocus(tvRows, 0), topPad) {
             MediaCard(
                 title = if (it.isEpisode) it.seriesName ?: it.name else it.name,
                 subtitle = if (it.isEpisode) it.episodeLabel else it.year?.toString(),
                 image = jf.landscapeImage(it), landscape = true, progress = it.progress,
-                width = if (tv) 260.dp else 200.dp,
+                width = wideW ?: if (tv) 260.dp else 200.dp, showText = text,
                 onFocus = focusOf(onFocus, it),
                 onClick = { ctx.play(it) },
             )
@@ -156,21 +175,22 @@ private fun LazyListScope.homeRows(data: HomeData, nav: Nav, ctx: Context, onFoc
     }
     item {
         val tv = LocalIsTv.current
-        MediaRow("Próximos episódios", data.nextUp) {
+        MediaRow("Próximos episódios", data.nextUp, Modifier.rowFocus(tvRows, 1), topPad) {
             MediaCard(
                 title = it.seriesName ?: it.name, subtitle = it.episodeLabel,
                 image = jf.landscapeImage(it), landscape = true,
-                width = if (tv) 260.dp else 200.dp,
+                width = wideW ?: if (tv) 260.dp else 200.dp, showText = text,
                 played = Watched.isPlayed(it),
                 onFocus = focusOf(onFocus, it),
                 onClick = { if (tv) ctx.play(it) else nav.push(Route.Details(it.id)) },
             )
         }
     }
-    items(data.latest) { (name, list) ->
-        MediaRow("Adicionados em $name", list) {
+    itemsIndexed(data.latest) { i, (name, list) ->
+        MediaRow("Adicionados em $name", list, Modifier.rowFocus(tvRows, 2 + i), topPad) {
             MediaCard(
                 title = it.name, subtitle = it.year?.toString(), image = jf.posterImage(it),
+                showText = text, width = posterW ?: if (LocalIsTv.current) 150.dp else 112.dp,
                 badge = it.userData?.unplayed?.takeIf { n -> n > 0 && !Watched.isPlayed(it) }?.toString(),
                 played = Watched.isPlayed(it),
                 onFocus = focusOf(onFocus, it),
@@ -178,7 +198,8 @@ private fun LazyListScope.homeRows(data: HomeData, nav: Nav, ctx: Context, onFoc
             )
         }
     }
-    item { Spacer(Modifier.height(48.dp)) }
+    // espaço no fim para que a última fileira também consiga subir até o topo
+    item { Spacer(Modifier.height(tvRows?.endSpace ?: 48.dp)) }
 }
 
 /** Botão "visto / não visto". */
@@ -231,7 +252,19 @@ private fun TvHome(data: HomeData, slides: List<Item>, nav: Nav, onChanged: () -
 
     val spot = focused ?: slides.getOrNull(slide) ?: data.resume.firstOrNull() ?: data.latest.firstOrNull()?.second?.firstOrNull()
 
-    Box(Modifier.fillMaxSize().background(Black)) {
+    BoxWithConstraints(Modifier.fillMaxSize().background(Black)) {
+        // Divide a tela: destaque em cima, uma fileira inteira de capas embaixo (qualquer TV/densidade)
+        val spotH = (maxHeight * 0.5f).coerceIn(230.dp, 360.dp)
+        val rowsH = maxHeight - spotH
+        // fileira = título (~30) + margens do foco (~30) + capa
+        val posterH = (rowsH - 66.dp).coerceIn(120.dp, 300.dp)
+        val listState = rememberLazyListState()
+        val scope = rememberCoroutineScope()
+        val tvRows = remember(posterH, rowsH) {
+            TvRows(posterH, rowsH) { index ->
+                scope.launch { runCatching { listState.animateScrollToItem(index) } }
+            }
+        }
         Crossfade(targetState = spot?.let { jf.backdropImage(it, 1920) }, animationSpec = tween(650), label = "spotBg") { url ->
             Box(Modifier.fillMaxSize()) {
                 if (url != null) {
@@ -254,9 +287,9 @@ private fun TvHome(data: HomeData, slides: List<Item>, nav: Nav, onChanged: () -
         )
 
         Column(Modifier.fillMaxSize()) {
-            if (spot != null) Spotlight(spot, nav, playFocus, onChanged, Modifier.height(318.dp))
-            LazyColumn(Modifier.weight(1f)) {
-                homeRows(data, nav, ctx) { pending = it }
+            if (spot != null) Spotlight(spot, nav, playFocus, onChanged, Modifier.height(spotH))
+            LazyColumn(Modifier.weight(1f), state = listState) {
+                homeRows(data, nav, ctx, onFocus = { pending = it }, tvRows = tvRows)
             }
         }
     }
@@ -267,7 +300,7 @@ private fun Spotlight(item: Item, nav: Nav, playFocus: FocusRequester, onChanged
     val ctx = LocalContext.current
     val title = if (item.isEpisode) item.seriesName ?: item.name else item.name
     Column(
-        modifier.padding(start = 40.dp, end = 40.dp, top = 30.dp).widthIn(max = 660.dp),
+        modifier.padding(start = 40.dp, end = 40.dp, top = 22.dp).widthIn(max = 660.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Text(kindLabel(item), color = Orange, style = MaterialTheme.typography.labelMedium)

@@ -151,6 +151,7 @@ fun MediaCard(
     badge: String? = null,
     played: Boolean = false,
     onFocus: (() -> Unit)? = null,
+    showText: Boolean = true,          // TV inicial: o título aparece no destaque, não embaixo da capa
 ) {
     val shape = RoundedCornerShape(10.dp)
     Column(modifier.width(width)) {
@@ -182,20 +183,22 @@ fun MediaCard(
                 }
             }
         }
-        Spacer(Modifier.height(6.dp))
-        Text(title, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        if (!subtitle.isNullOrBlank()) {
-            Text(subtitle, style = MaterialTheme.typography.bodyMedium, color = TextMuted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        if (showText) {
+            Spacer(Modifier.height(6.dp))
+            Text(title, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (!subtitle.isNullOrBlank()) {
+                Text(subtitle, style = MaterialTheme.typography.bodyMedium, color = TextMuted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
         }
     }
 }
 
 /** Fileira horizontal com título. */
 @Composable
-fun <T> MediaRow(title: String, list: List<T>, card: @Composable (T) -> Unit) {
+fun <T> MediaRow(title: String, list: List<T>, modifier: Modifier = Modifier, topPad: Dp = 18.dp, card: @Composable (T) -> Unit) {
     if (list.isEmpty()) return
     val tv = LocalIsTv.current
-    Column(Modifier.padding(top = 18.dp)) {
+    Column(modifier.padding(top = topPad)) {
         Text(
             title, style = MaterialTheme.typography.titleLarge,
             modifier = Modifier.padding(horizontal = if (tv) 40.dp else 16.dp)

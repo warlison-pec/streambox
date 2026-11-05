@@ -21,6 +21,9 @@ data class Channel(
     val logo: String?,
     val url: String,
     val tvgId: String?,
+    // Cabeçalhos exigidos por alguns canais (#EXTVLCOPT, #EXTHTTP ou "url|User-Agent=…")
+    val userAgent: String? = null,
+    val referer: String? = null,
 )
 
 data class Programme(val title: String, val start: Long, val stop: Long) {
@@ -40,6 +43,9 @@ data class ExternalGuide(val channels: List<Channel>, val programmes: Map<String
  * TV ao vivo a partir de uma lista M3U e de um guia XMLTV escolhidos pelo usuário.
  * Os arquivos ficam em cache por 6 horas; o guia guarda só as próximas 12 horas dos canais da lista.
  */
+private val UA_JSON = Regex("\"user-agent\"\\s*:\\s*\"([^\"]+)\"", RegexOption.IGNORE_CASE)
+private val REF_JSON = Regex("\"refer+er\"\\s*:\\s*\"([^\"]+)\"", RegexOption.IGNORE_CASE)
+
 class ExternalLiveTv(private val s: Session, private val cacheDir: File) {
 
     companion object {
@@ -83,6 +89,8 @@ class ExternalLiveTv(private val s: Session, private val cacheDir: File) {
         val out = ArrayList<Channel>()
         var attrs: Map<String, String> = emptyMap()
         var title: String? = null
+        var ua: String? = null
+        var referer: String? = null
         file.bufferedReader().useLines { lines ->
             for (raw in lines) {
                 val line = raw.trim()
@@ -92,10 +100,33 @@ class ExternalLiveTv(private val s: Session, private val cacheDir: File) {
                         val header = if (comma >= 0) line.substring(0, comma) else line
                         title = if (comma >= 0) line.substring(comma + 1).trim() else null
                         attrs = ATTR.findAll(header).associate { it.groupValues[1].lowercase() to it.groupValues[2] }
+                        ua = attrs["user-agent"] ?: attrs["http-user-agent"]
+                        referer = attrs["referer"] ?: attrs["http-referrer"]
+                    }
+                    line.startsWith("#EXTVLCOPT:", ignoreCase = true) -> {
+                        val opt = line.substringAfter(':')
+                        val key = opt.substringBefore('=').trim().lowercase()
+                        val value = opt.substringAfter('=', "").trim()
+                        if (key == "http-user-agent") ua = value
+                        if (key == "http-referrer" || key == "http-referer") referer = value
+                    }
+                    line.startsWith("#EXTHTTP:", ignoreCase = true) -> {
+                        UA_JSON.find(line)?.let { ua = it.groupValues[1] }
+                        REF_JSON.find(line)?.let { referer = it.groupValues[1] }
                     }
                     line.isEmpty() || line.startsWith("#") -> Unit
                     title != null -> {
-                        val url = line
+                        // Formato do Kodi: http://canal|User-Agent=X&Referer=Y
+                        var url = line
+                        if ('|' in line) {
+                            url = line.substringBefore('|').trim()
+                            for (part in line.substringAfter('|').split('&')) {
+                                val k = part.substringBefore('=').trim().lowercase()
+                                val v = java.net.URLDecoder.decode(part.substringAfter('=', ""), "UTF-8")
+                                if (k == "user-agent") ua = v
+                                if (k == "referer" || k == "referrer") referer = v
+                            }
+                        }
                         val name = title?.ifBlank { null } ?: attrs["tvg-name"] ?: "Canal"
                         val isVod = VOD_EXT.containsMatchIn(url) || url.contains("/movie/") || url.contains("/series/")
                         if ((url.startsWith("http://") || url.startsWith("https://")) && !isVod) {
@@ -106,10 +137,14 @@ class ExternalLiveTv(private val s: Session, private val cacheDir: File) {
                                 logo = attrs["tvg-logo"]?.ifBlank { null },
                                 url = url,
                                 tvgId = attrs["tvg-id"]?.ifBlank { null },
+                                userAgent = ua?.ifBlank { null },
+                                referer = referer?.ifBlank { null },
                             )
                         }
                         title = null
                         attrs = emptyMap()
+                        ua = null
+                        referer = null
                         if (out.size >= MAX_CHANNELS) return out
                     }
                 }

@@ -18,7 +18,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
+import com.pecbox.streambox.ui.components.SbTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -95,7 +95,7 @@ fun SearchScreen(nav: Nav) {
         verticalArrangement = Arrangement.spacedBy(if (tv) 22.dp else 16.dp),
     ) {
         fullLine {
-            OutlinedTextField(
+            SbTextField(
                 value = query, onValueChange = { query = it },
                 placeholder = { Text("Buscar filmes e séries…") },
                 leadingIcon = { Icon(Icons.Filled.Search, null) },

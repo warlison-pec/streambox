@@ -27,6 +27,7 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.lifecycleScope
 import androidx.media3.common.AudioAttributes
+import androidx.media3.common.ForwardingPlayer
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
@@ -40,6 +41,7 @@ import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.CaptionStyleCompat
 import androidx.media3.ui.PlayerView
@@ -54,6 +56,11 @@ import com.pecbox.streambox.data.MediaSegment
 import android.content.Intent
 import com.pecbox.streambox.data.friendly
 import kotlinx.coroutines.delay
+import android.view.FocusFinder
+import android.widget.HorizontalScrollView
+import coil.imageLoader
+import coil.request.ImageRequest
+import com.pecbox.streambox.ui.Watched
 import kotlinx.coroutines.launch
 import java.util.UUID
 
@@ -72,6 +79,8 @@ class PlayerActivity : ComponentActivity() {
         const val EXTRA_START_TICKS = "start"
         const val EXTRA_URL = "url"          // canal de lista M3U externa
         const val EXTRA_JF_LIVE = "jf_live"  // canal ao vivo do Jellyfin
+        const val EXTRA_UA = "ua"            // cabeçalhos exigidos pelo canal (lista M3U)
+        const val EXTRA_REFERER = "referer"
         private const val TICKS_PER_MS = 10_000L
 
         /** (rótulo, bitrate máximo, altura máxima). bitrate 0 = original. */
@@ -100,6 +109,30 @@ class PlayerActivity : ComponentActivity() {
     private var method = "DirectStream"
     private var triedHls = false
     private var started = false
+    private var reconnects = 0                 // TV ao vivo: tentativas seguidas de reconexão
+    private val stallTask = Runnable { if (isLive && player?.playbackState == Player.STATE_BUFFERING) reconnect("O canal parou de responder") }
+    private var userPaused = false             // pausa pedida pelo usuário: a única que o ao vivo respeita
+    private var reconnectPending = false
+    private var lastPos = -1L
+    private var frozenMs = 0L
+
+    /* Ao vivo: o vídeo não pode ficar parado sem o usuário pedir.
+       - pausou sozinho → volta a tocar;
+       - ficou parado (sem avançar) por ~20 s → reconecta a fonte. */
+    private val liveWatchdog = object : Runnable {
+        override fun run() {
+            val p = player ?: return
+            if (isLive && !userPaused && !reconnectPending) {
+                if (!p.playWhenReady) p.playWhenReady = true
+                if (p.playbackState == Player.STATE_IDLE) { p.prepare() }
+                val pos = p.currentPosition
+                frozenMs = if (pos == lastPos && !p.isPlaying) frozenMs + 2000 else 0
+                lastPos = pos
+                if (frozenMs >= 20_000) { frozenMs = 0; reconnect("O canal parou de responder") }
+            } else frozenMs = 0
+            handler.postDelayed(this, 2000)
+        }
+    }
     private var quality = 0                 // índice em QUALITIES
     private var currentUrl = ""
     private var currentIsHls = false
@@ -124,6 +157,17 @@ class PlayerActivity : ComponentActivity() {
     private lateinit var nextPlay: TextView
     private lateinit var nextCancel: TextView
     private var overlaySel = 0             // botão destacado no cartão (controle remoto)
+
+    // Episódios da série: anterior / próximo e a lista que abre com ↓ abaixo dos controles
+    private var episodes: List<Item> = emptyList()
+    private var prevEp: Item? = null
+    private lateinit var episodesPanel: LinearLayout
+    private lateinit var episodesTitle: TextView
+    private lateinit var episodesRow: LinearLayout
+    private lateinit var seekOsd: TextView
+    private var seekTarget = -1L           // posição acumulada enquanto o usuário aperta ←/→
+    private val seekCommit = Runnable { seekTarget = -1L }
+    private val hideOsd = Runnable { if (::seekOsd.isInitialized) seekOsd.visibility = View.GONE }
 
     private val segmentTask = object : Runnable {
         override fun run() {
@@ -181,15 +225,24 @@ class PlayerActivity : ComponentActivity() {
 
         // HTTP com User-Agent e redirecionamento http↔https (comum em listas IPTV)
         val http = DefaultHttpDataSource.Factory()
-            .setUserAgent("StreamBox/Android ExoPlayer")
+            .setUserAgent(intent.getStringExtra(EXTRA_UA)?.ifBlank { null } ?: "StreamBox/Android ExoPlayer")
             .setAllowCrossProtocolRedirects(true)
             .setConnectTimeoutMs(15_000)
             .setReadTimeoutMs(30_000)
+        intent.getStringExtra(EXTRA_REFERER)?.ifBlank { null }?.let { ref ->
+            val origin = runCatching { Uri.parse(ref).let { "${it.scheme}://${it.authority}" } }.getOrNull()
+            http.setDefaultRequestProperties(buildMap { put("Referer", ref); if (origin != null) put("Origin", origin) })
+        }
         val renderers = DefaultRenderersFactory(this)
             .setEnableDecoderFallback(true)
             .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
         val exo = ExoPlayer.Builder(this, renderers)
-            .setMediaSourceFactory(DefaultMediaSourceFactory(DefaultDataSource.Factory(this, http)))
+            .setMediaSourceFactory(
+                DefaultMediaSourceFactory(DefaultDataSource.Factory(this, http)).apply {
+                    // ao vivo: insiste mais antes de considerar a lista/pedaço perdido
+                    if (isLive) setLoadErrorHandlingPolicy(DefaultLoadErrorHandlingPolicy(8))
+                }
+            )
             .setAudioAttributes(
                 AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MOVIE).build(),
                 true
@@ -203,7 +256,8 @@ class PlayerActivity : ComponentActivity() {
             .build()
         exo.addListener(listener)
         player = exo
-        view.player = exo
+        view.player = EpisodePlayer(exo)
+        if (isLive) handler.postDelayed(liveWatchdog, 2000)
 
         when {
             externalUrl != null -> load(externalUrl!!, 0, hls = externalUrl!!.contains(".m3u8"))
@@ -235,7 +289,21 @@ class PlayerActivity : ComponentActivity() {
             val item = runCatching { jf.item(id) }.getOrNull() ?: return@launch
             current = item
             segments = runCatching { jf.mediaSegments(id, item.runTimeTicks, item.chapters) }.getOrDefault(emptyList())
-            next = if (item.isEpisode) runCatching { jf.nextEpisode(item) }.getOrNull() else null
+            val sid = item.seriesId
+            if (item.isEpisode && sid != null) {
+                episodes = runCatching { jf.seriesEpisodes(sid) }.getOrDefault(emptyList())
+                val idx = episodes.indexOfFirst { it.id == item.id }
+                if (idx >= 0) {
+                    prevEp = episodes.getOrNull(idx - 1)
+                    next = episodes.getOrNull(idx + 1)
+                } else {
+                    next = runCatching { jf.nextEpisode(item) }.getOrNull()
+                }
+                buildEpisodesPanel(item)
+            }
+            // mostra/ativa ⏮ e ⏭ nos controles
+            view.setShowPreviousButton(prevEp != null)
+            view.setShowNextButton(next != null)
             handler.removeCallbacks(segmentTask)
             handler.post(segmentTask)
         }
@@ -311,6 +379,10 @@ class PlayerActivity : ComponentActivity() {
     private val listener = object : Player.Listener {
         override fun onPlaybackStateChanged(state: Int) {
             when (state) {
+                Player.STATE_BUFFERING -> if (isLive) {
+                    handler.removeCallbacks(stallTask)
+                    handler.postDelayed(stallTask, 15_000)
+                }
                 Player.STATE_READY -> if (!started) {
                     started = true
                     if (!isLive) {
@@ -320,12 +392,24 @@ class PlayerActivity : ComponentActivity() {
                 }
                 Player.STATE_ENDED -> if (!isLive) {
                     if (next != null && !nextDismissed) playNext() else finish()
+                } else {
+                    reconnect("A transmissão foi interrompida")   // fonte fechou a conexão: abre de novo
                 }
                 else -> Unit
             }
         }
 
+        override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+            // Só conta como pausa do usuário o que veio do controle/botões (ou fone desconectado / ligação)
+            userPaused = !playWhenReady && reason in setOf(
+                Player.PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST,
+                Player.PLAY_WHEN_READY_CHANGE_REASON_AUDIO_FOCUS_LOSS,
+                Player.PLAY_WHEN_READY_CHANGE_REASON_AUDIO_BECOMING_NOISY,
+            )
+        }
+
         override fun onIsPlayingChanged(isPlaying: Boolean) {
+            if (isPlaying) { reconnects = 0; handler.removeCallbacks(stallTask) }
             if (started && !isLive) report { id, ticks, paused -> jf.reportProgress(id, ticks, paused, method, playSession) }
         }
 
@@ -336,6 +420,7 @@ class PlayerActivity : ComponentActivity() {
                 p.prepare()
                 return
             }
+            if (isLive) { reconnect(error.errorCodeName); return }
             val id = itemId
             if (!isLive && id != null && !triedHls && !currentIsHls) {
                 // Formato não suportado pelo aparelho: pede conversão ao servidor e continua do mesmo ponto.
@@ -350,6 +435,20 @@ class PlayerActivity : ComponentActivity() {
                 finish()
             }
         }
+    }
+
+    /** Sinal ao vivo caiu: reconecta sem desistir, com espera crescente (até 15 s entre tentativas). */
+    private fun reconnect(reason: String) {
+        handler.removeCallbacks(stallTask)
+        if (reconnectPending || player == null) return
+        reconnectPending = true
+        reconnects++
+        val msg = if (reconnects <= 3) "Sinal perdido. Reconectando…" else "Sem sinal ($reason). Tentando de novo ($reconnects)…"
+        Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+        handler.postDelayed({
+            reconnectPending = false
+            if (player != null) { userPaused = false; load(currentUrl, 0, currentIsHls) }
+        }, (1500L * reconnects).coerceAtMost(15_000L))
     }
 
     private fun report(block: suspend (id: String, ticks: Long, paused: Boolean) -> Unit) {
@@ -677,6 +776,140 @@ class PlayerActivity : ComponentActivity() {
         }
         root.addView(nextCard, FrameLayout.LayoutParams(dp(360), ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM or Gravity.END)
             .apply { bottomMargin = dp(110); marginEnd = dp(32) })
+
+        // Aviso de avanço/recuo pelas setas (sem abrir os controles)
+        seekOsd = TextView(this).apply {
+            visibility = View.GONE
+            setTextColor(Color.WHITE); setTextSize(TypedValue.COMPLEX_UNIT_SP, 20f); typeface = Typeface.DEFAULT_BOLD
+            setPadding(dp(22), dp(10), dp(22), dp(10))
+            background = GradientDrawable().apply { cornerRadius = dp(24).toFloat(); setColor(0xCC000000.toInt()) }
+        }
+        root.addView(seekOsd, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.CENTER_HORIZONTAL)
+            .apply { topMargin = dp(40) })
+
+        // Lista de episódios (abre com ↓ abaixo dos controles)
+        episodesTitle = TextView(this).apply {
+            setTextColor(Color.WHITE); setTextSize(TypedValue.COMPLEX_UNIT_SP, 18f); typeface = Typeface.DEFAULT_BOLD
+            setPadding(dp(40), 0, dp(40), dp(10))
+        }
+        episodesRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(dp(36), dp(6), dp(36), dp(6)) }
+        val scroll = HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            clipToPadding = false
+            addView(episodesRow)
+        }
+        episodesPanel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+            setPadding(0, dp(48), 0, dp(28))
+            background = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(0x00000000, 0xE6000000.toInt(), 0xF5000000.toInt()))
+            addView(episodesTitle)
+            addView(scroll)
+        }
+        root.addView(episodesPanel, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM))
+    }
+
+    /** Cartões dos episódios da temporada atual (o atual fica marcado). */
+    private fun buildEpisodesPanel(cur: Item) {
+        val season = episodes.filter { it.seasonId == cur.seasonId }.ifEmpty { episodes }
+        episodesTitle.text = listOfNotNull(cur.seriesName, cur.seasonNumber?.let { "Temporada $it" }).joinToString(" · ")
+        episodesRow.removeAllViews()
+        val w = dp(230)
+        for (ep in season) {
+            val isCurrent = ep.id == cur.id
+            val img = ImageView(this).apply {
+                scaleType = ImageView.ScaleType.CENTER_CROP
+                setBackgroundColor(0xFF1E1E1E.toInt())
+                clipToOutline = true
+                outlineProvider = object : android.view.ViewOutlineProvider() {
+                    override fun getOutline(v: View, o: android.graphics.Outline) { o.setRoundRect(0, 0, v.width, v.height, dp(8).toFloat()) }
+                }
+            }
+            jf.landscapeImage(ep)?.let { url -> imageLoader.enqueue(ImageRequest.Builder(this).data(url).target(img).build()) }
+            val label = TextView(this).apply {
+                text = buildString {
+                    append("E%02d".format(ep.indexNumber ?: 0))
+                    if (isCurrent) append("  ·  ASSISTINDO") else if (Watched.isPlayed(ep)) append("  ·  ✓ visto")
+                }
+                setTextColor(0xFFFF7A00.toInt()); setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f); typeface = Typeface.DEFAULT_BOLD
+                setPadding(0, dp(8), 0, 0)
+            }
+            val name = TextView(this).apply {
+                text = ep.name; setTextColor(Color.WHITE); setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f); maxLines = 2
+            }
+            val card = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(8), dp(8), dp(8), dp(8))
+                isFocusable = true
+                isClickable = true
+                background = StateListDrawable().apply {
+                    val on = GradientDrawable().apply { cornerRadius = dp(12).toFloat(); setColor(0x33FFFFFF); setStroke(dp(3), 0xFFFF7A00.toInt()) }
+                    val off = GradientDrawable().apply { cornerRadius = dp(12).toFloat(); setColor(if (isCurrent) 0x22FF7A00 else Color.TRANSPARENT) }
+                    addState(intArrayOf(android.R.attr.state_focused), on)
+                    addState(intArrayOf(android.R.attr.state_pressed), on)
+                    addState(intArrayOf(), off)
+                }
+                addView(img, LinearLayout.LayoutParams(w, w * 9 / 16))
+                addView(label)
+                addView(name, LinearLayout.LayoutParams(w, ViewGroup.LayoutParams.WRAP_CONTENT))
+                tag = if (isCurrent) "current" else null
+                setOnClickListener { if (isCurrent) hideEpisodes() else playEpisode(ep) }
+            }
+            episodesRow.addView(card, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginEnd = dp(10) })
+        }
+    }
+
+    private val episodesOpen get() = ::episodesPanel.isInitialized && episodesPanel.visibility == View.VISIBLE
+
+    private fun showEpisodes() {
+        if (episodesRow.childCount == 0) return
+        view.hideController()
+        episodesPanel.visibility = View.VISIBLE
+        val target = (0 until episodesRow.childCount).map { episodesRow.getChildAt(it) }.firstOrNull { it.tag == "current" }
+            ?: episodesRow.getChildAt(0)
+        target.post { target.requestFocus() }
+    }
+
+    private fun hideEpisodes(showControls: Boolean = false) {
+        episodesPanel.visibility = View.GONE
+        if (showControls) view.showController()
+    }
+
+    /** ←/→ com os controles escondidos: recua/avança 10 s (segurando, 30 s por vez). */
+    private fun seekBy(forward: Boolean, held: Boolean) {
+        val p = player ?: return
+        val dur = p.duration.takeIf { it > 0 } ?: Long.MAX_VALUE
+        val step = if (held) 30_000L else 10_000L
+        val base = if (seekTarget >= 0) seekTarget else p.currentPosition
+        seekTarget = (base + if (forward) step else -step).coerceIn(0L, (dur - 1_000L).coerceAtLeast(0L))
+        p.seekTo(seekTarget)
+        seekOsd.text = (if (forward) "⏩  " else "⏪  ") + fmtTime(seekTarget) + (if (dur != Long.MAX_VALUE) "  /  " + fmtTime(dur) else "")
+        seekOsd.visibility = View.VISIBLE
+        handler.removeCallbacks(hideOsd); handler.postDelayed(hideOsd, 1500)
+        handler.removeCallbacks(seekCommit); handler.postDelayed(seekCommit, 900)
+    }
+
+    private fun fmtTime(ms: Long): String {
+        val t = ms / 1000
+        return if (t >= 3600) "%d:%02d:%02d".format(t / 3600, t / 60 % 60, t % 60) else "%d:%02d".format(t / 60, t % 60)
+    }
+
+    /** Player entregue aos controles: ⏮/⏭ trocam de episódio da série. */
+    @OptIn(UnstableApi::class)
+    private inner class EpisodePlayer(p: Player) : ForwardingPlayer(p) {
+        private fun extra(): List<Int> = buildList {
+            if (prevEp != null) { add(Player.COMMAND_SEEK_TO_PREVIOUS); add(Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM) }
+            if (next != null) { add(Player.COMMAND_SEEK_TO_NEXT); add(Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM) }
+        }
+        override fun getAvailableCommands(): Player.Commands =
+            super.getAvailableCommands().buildUpon().addAll(*extra().toIntArray()).build()
+        override fun isCommandAvailable(command: Int): Boolean = command in extra() || super.isCommandAvailable(command)
+        override fun hasNextMediaItem(): Boolean = next != null || super.hasNextMediaItem()
+        override fun hasPreviousMediaItem(): Boolean = prevEp != null || super.hasPreviousMediaItem()
+        override fun seekToNext() { next?.let { playEpisode(it) } ?: super.seekToNext() }
+        override fun seekToNextMediaItem() { next?.let { playEpisode(it) } ?: super.seekToNextMediaItem() }
+        override fun seekToPrevious() { prevEp?.let { playEpisode(it) } ?: super.seekToPrevious() }
+        override fun seekToPreviousMediaItem() { prevEp?.let { playEpisode(it) } ?: super.seekToPreviousMediaItem() }
     }
 
     /** Botões do overlay visíveis agora, na ordem da navegação ←/→. */
@@ -759,13 +992,19 @@ class PlayerActivity : ComponentActivity() {
 
     private fun playNext() {
         val n = next ?: return
+        playEpisode(n)
+    }
+
+    /** Abre outro episódio no lugar deste (o atual registra onde parou ao fechar). */
+    private fun playEpisode(n: Item) {
         next = null
         val label = "${n.seriesName ?: current?.seriesName ?: ""} · ${n.episodeLabel}"
+        val resume = if (Watched.isPlayed(n)) 0L else n.userData?.positionTicks ?: 0L
         startActivity(
             Intent(this, PlayerActivity::class.java)
                 .putExtra(EXTRA_ID, n.id)
                 .putExtra(EXTRA_TITLE, label)
-                .putExtra(EXTRA_START_TICKS, 0L)
+                .putExtra(EXTRA_START_TICKS, resume)
         )
         finish()
     }
@@ -777,6 +1016,25 @@ class PlayerActivity : ComponentActivity() {
      * OK aciona o botão destacado e ←/→ troca entre "Assistir agora" e "Cancelar".
      */
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        val code = event.keyCode
+        val down = event.action == KeyEvent.ACTION_DOWN
+        // Lista de episódios aberta: ↑ ou Voltar fecham (↑ volta aos controles)
+        if (episodesOpen) {
+            if (code == KeyEvent.KEYCODE_BACK || code == KeyEvent.KEYCODE_DPAD_UP) {
+                if (down && event.repeatCount == 0) hideEpisodes(showControls = code == KeyEvent.KEYCODE_DPAD_UP)
+                return true
+            }
+            return super.dispatchKeyEvent(event)
+        }
+        // Controles abertos e ↓ sem mais nada abaixo: abre a lista de episódios
+        if (code == KeyEvent.KEYCODE_DPAD_DOWN && view.isControllerFullyVisible && episodesRow.childCount > 0) {
+            val focus = currentFocus
+            val below = focus?.let { FocusFinder.getInstance().findNextFocus(window.decorView as ViewGroup, it, View.FOCUS_DOWN) }
+            if (below == null || !isInside(below, view)) {
+                if (down && event.repeatCount == 0) showEpisodes()
+                return true
+            }
+        }
         val buttons = overlayButtons()
         if (buttons.isNotEmpty() && !view.isControllerFullyVisible) {
             val ok = event.keyCode in listOf(KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER, KeyEvent.KEYCODE_BUTTON_A)
@@ -789,7 +1047,21 @@ class PlayerActivity : ComponentActivity() {
                 return true
             }
         }
+        // ←/→ com os controles escondidos: avança/recua o vídeo (filmes e episódios)
+        if (!isLive && !view.isControllerFullyVisible && (code == KeyEvent.KEYCODE_DPAD_LEFT || code == KeyEvent.KEYCODE_DPAD_RIGHT)) {
+            if (down) seekBy(forward = code == KeyEvent.KEYCODE_DPAD_RIGHT, held = event.repeatCount > 2)
+            return true
+        }
         return super.dispatchKeyEvent(event)
+    }
+
+    private fun isInside(v: View, parent: View): Boolean {
+        var cur: View? = v
+        while (cur != null) {
+            if (cur === parent) return true
+            cur = cur.parent as? View
+        }
+        return false
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
@@ -827,6 +1099,10 @@ class PlayerActivity : ComponentActivity() {
         val p = player ?: return
         handler.removeCallbacks(progressTask)
         handler.removeCallbacks(segmentTask)
+        handler.removeCallbacks(stallTask)
+        handler.removeCallbacks(liveWatchdog)
+        handler.removeCallbacks(seekCommit)
+        handler.removeCallbacks(hideOsd)
         if (started && !isLive) report { id, ticks, _ -> jf.reportStopped(id, ticks, method, playSession) }
         liveStreamId?.let { live -> App.scope.launch { runCatching { jf.closeLiveStream(live) } } }
         p.removeListener(listener)

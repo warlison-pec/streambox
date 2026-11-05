@@ -118,10 +118,12 @@ fun Context.playJellyfinChannel(channel: Item) {
 }
 
 /** Canal de lista M3U externa. */
-fun Context.playExternalChannel(name: String, url: String) {
+fun Context.playExternalChannel(name: String, url: String, userAgent: String? = null, referer: String? = null) {
     startActivity(
         Intent(this, PlayerActivity::class.java)
             .putExtra(PlayerActivity.EXTRA_URL, url)
             .putExtra(PlayerActivity.EXTRA_TITLE, name)
+            .putExtra(PlayerActivity.EXTRA_UA, userAgent)
+            .putExtra(PlayerActivity.EXTRA_REFERER, referer)
     )
 }

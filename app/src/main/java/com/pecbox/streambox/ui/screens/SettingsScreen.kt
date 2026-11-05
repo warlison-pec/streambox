@@ -14,7 +14,7 @@ import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
+import com.pecbox.streambox.ui.components.SbTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -90,7 +90,7 @@ fun SettingsScreen() {
             "Endereço da ponte de busca/solicitação. Deixe vazio para desativar a seção \"Disponível para solicitar\".",
             color = TextMuted
         )
-        OutlinedTextField(
+        SbTextField(
             value = indexer, onValueChange = { indexer = it; saved = false },
             singleLine = true, modifier = Modifier.fillMaxWidth(),
             label = { Text("URL da ponte") },
@@ -108,11 +108,11 @@ fun SettingsScreen() {
             "Use uma lista M3U de canais que você tem direito de acessar. O guia (EPG) no formato XMLTV também é opcional (aceita .xml ou .xml.gz).",
             color = TextMuted
         )
-        OutlinedTextField(
+        SbTextField(
             value = m3u, onValueChange = { m3u = it; tvSaved = false }, singleLine = true,
             modifier = Modifier.fillMaxWidth(), label = { Text("URL da lista M3U") },
         )
-        OutlinedTextField(
+        SbTextField(
             value = epg, onValueChange = { epg = it; tvSaved = false }, singleLine = true,
             modifier = Modifier.fillMaxWidth(), label = { Text("URL do guia EPG/XMLTV (opcional)") },
         )
@@ -239,7 +239,7 @@ private fun QuickConnectAuthorize() {
         "Digite o código que aparece em outro aparelho para conectá-lo com a sua conta, sem precisar de senha.",
         color = TextMuted
     )
-    OutlinedTextField(
+    SbTextField(
         value = code,
         onValueChange = { v -> code = v.filter { it.isDigit() }.take(10); status = "" },
         singleLine = true, modifier = Modifier.fillMaxWidth(),
@@ -278,7 +278,7 @@ private fun SeerrSettings() {
         "Mostra a seção \"Pedir no Seerr\" na busca, para pedir títulos que não estão na biblioteca nem nas listas.",
         color = TextMuted
     )
-    OutlinedTextField(
+    SbTextField(
         value = url, onValueChange = { url = it }, singleLine = true,
         modifier = Modifier.fillMaxWidth(), label = { Text("Endereço do Seerr") },
     )
@@ -287,17 +287,17 @@ private fun SeerrSettings() {
         Chip("Chave de API", selected = useKey, onClick = { useKey = true })
     }
     if (useKey) {
-        OutlinedTextField(
+        SbTextField(
             value = key, onValueChange = { key = it }, singleLine = true,
             modifier = Modifier.fillMaxWidth(), label = { Text("Chave de API (Seerr → Configurações → Geral)") },
         )
         Text("Atenção: com a chave, todos os pedidos saem como administrador do Seerr.", color = TextMuted, style = MaterialTheme.typography.bodyMedium)
     } else {
-        OutlinedTextField(
+        SbTextField(
             value = user, onValueChange = { user = it }, singleLine = true,
             modifier = Modifier.fillMaxWidth(), label = { Text("Usuário do Jellyfin") },
         )
-        OutlinedTextField(
+        SbTextField(
             value = pass, onValueChange = { pass = it }, singleLine = true,
             modifier = Modifier.fillMaxWidth(), label = { Text("Senha") },
             visualTransformation = PasswordVisualTransformation(),

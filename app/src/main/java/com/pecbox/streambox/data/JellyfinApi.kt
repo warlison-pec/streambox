@@ -314,6 +314,10 @@ class JellyfinApi(private val s: Session) {
     }
 
     /** Episódio seguinte da série (passa para a próxima temporada quando acaba a atual). */
+    /** Todos os episódios da série, em ordem (temporadas e episódios). */
+    suspend fun seriesEpisodes(seriesId: String): List<Item> =
+        items("/Shows/$seriesId/Episodes", mapOf("userId" to s.userId, "fields" to FIELDS)).items
+
     suspend fun nextEpisode(episode: Item): Item? {
         val seriesId = episode.seriesId ?: return null
         if (!episode.isEpisode) return null

@@ -28,7 +28,7 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
+import com.pecbox.streambox.ui.components.SbTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -157,7 +157,7 @@ fun LoginScreen() {
                 Text("Entre com o seu usuário.", color = TextMuted)
             } else {
                 Text("Conecte ao seu servidor Jellyfin.", color = TextMuted)
-                OutlinedTextField(
+                SbTextField(
                     value = server, onValueChange = { server = it; qcCode = null; qcSecret = null },
                     label = { Text("Endereço do servidor") },
                     placeholder = { Text("ex.: https://jellyfin.seudominio.com ou 192.168.0.10:8096") },
@@ -203,12 +203,12 @@ fun LoginScreen() {
                     SbButton("Gerar novo código", onClick = { startQuickConnect() }, icon = Icons.Filled.Refresh, primary = false, modifier = Modifier.fillMaxWidth())
                 }
             } else {
-                OutlinedTextField(
+                SbTextField(
                     value = user, onValueChange = { user = it }, label = { Text("Usuário") },
                     singleLine = true, modifier = Modifier.fillMaxWidth(),
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
                 )
-                OutlinedTextField(
+                SbTextField(
                     value = pass, onValueChange = { pass = it }, label = { Text("Senha") },
                     singleLine = true, modifier = Modifier.fillMaxWidth(),
                     visualTransformation = PasswordVisualTransformation(),
