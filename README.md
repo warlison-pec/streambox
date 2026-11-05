@@ -82,3 +82,4 @@ app/src/main/java/com/pecbox/streambox/
 - Pular abertura (Intro Skipper) e próximo episódio automático
 - Favoritos / Minha lista
 - Downloads offline no celular
+- site para Download do StreamBox-Comunidade-0.7.0.apk https://midia.pecbox.com.br/#/downloads?p=comunidade
