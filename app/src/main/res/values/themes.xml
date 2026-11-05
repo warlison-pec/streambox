@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.StreamBox" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/sb_black</item>
+        <item name="android:statusBarColor">@color/sb_black</item>
+        <item name="android:navigationBarColor">@color/sb_black</item>
+        <item name="android:colorAccent">@color/sb_orange</item>
+    </style>
+    <style name="Theme.StreamBox.Player" parent="Theme.StreamBox">
+        <item name="android:windowFullscreen">true</item>
+        <item name="android:windowBackground">@android:color/black</item>
+    </style>
+</resources>
