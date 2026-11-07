@@ -1,6 +1,6 @@
 # StreamBox
 
-Cliente Android leve para Jellyfin, com **um único APK para celular e TV** (Android TV, Fire TV, Google TV) e integração nativa com o [STRM Indexer](../strm-indexer) para **solicitar** filmes e séries direto da busca.
+Cliente Android leve para Jellyfin, com **um único APK para celular e TV** (Android TV, Fire TV, Google TV) e integração nativa com o [STRM Indexer](https://github.com/warlison-pec/strm-indexer) para **solicitar** filmes e séries direto da busca.
 
 - Kotlin + Jetpack Compose, sem SDK pesado: OkHttp + kotlinx.serialization
 - Player Media3/ExoPlayer: toca o arquivo original e, se o aparelho não suportar o formato, pede conversão HLS ao servidor
