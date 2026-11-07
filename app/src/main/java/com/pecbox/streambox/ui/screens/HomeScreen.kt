@@ -221,7 +221,7 @@ private fun LazyListScope.homeRows(data: HomeData, nav: Nav, ctx: Context, onFoc
     item { RowSpec(tvRows) {
         MediaRow("Minha lista", data.favorites.filter { Favorites.isFavorite(it) }, Modifier.rowFocus(tvRows, 2), topPad) {
             MediaCard(
-                title = it.name, subtitle = it.year?.toString(), image = jf.posterImage(it),
+                title = it.name, subtitle = it.year?.toString(), image = jf.posterImage(it), rating = it.rating,
                 showText = text, width = posterW ?: if (LocalIsTv.current) 150.dp else 112.dp,
                 badge = it.userData?.unplayed?.takeIf { n -> n > 0 && !Watched.isPlayed(it) }?.toString(),
                 played = Watched.isPlayed(it),
@@ -233,7 +233,7 @@ private fun LazyListScope.homeRows(data: HomeData, nav: Nav, ctx: Context, onFoc
     itemsIndexed(data.latest) { i, (name, list) -> RowSpec(tvRows) {
         MediaRow("Adicionados em $name", list, Modifier.rowFocus(tvRows, 3 + i), topPad) {
             MediaCard(
-                title = it.name, subtitle = it.year?.toString(), image = jf.posterImage(it),
+                title = it.name, subtitle = it.year?.toString(), image = jf.posterImage(it), rating = it.rating,
                 showText = text, width = posterW ?: if (LocalIsTv.current) 150.dp else 112.dp,
                 badge = it.userData?.unplayed?.takeIf { n -> n > 0 && !Watched.isPlayed(it) }?.toString(),
                 played = Watched.isPlayed(it),

@@ -220,6 +220,7 @@ private fun DetailsContent(item: Item, nav: Nav, onChanged: () -> Unit) {
                     items(children, key = { it.id }) { child ->
                         MediaCard(
                             title = child.name, subtitle = child.year?.toString(), image = jf.posterImage(child), played = Watched.isPlayed(child),
+                            rating = child.rating,
                             progress = child.progress, onClick = { nav.push(Route.Details(child.id)) }
                         )
                     }

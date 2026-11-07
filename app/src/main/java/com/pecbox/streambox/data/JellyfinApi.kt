@@ -172,15 +172,51 @@ class JellyfinApi(private val s: Session) {
         )
     ).items
 
-    suspend fun library(parentId: String, types: String, start: Int, limit: Int, sortBy: String, descending: Boolean): ItemsResult = items(
+    suspend fun library(
+        parentId: String, types: String, start: Int, limit: Int, sortBy: String, descending: Boolean,
+        genreId: String? = null, years: String? = null, studioId: String? = null,
+    ): ItemsResult = items(
         "/Items",
         mapOf(
             "userId" to s.userId, "parentId" to parentId, "recursive" to true,
             "includeItemTypes" to types, "sortBy" to sortBy,
             "sortOrder" to if (descending) "Descending" else "Ascending",
-            "startIndex" to start, "limit" to limit, "fields" to FIELDS
+            "startIndex" to start, "limit" to limit, "fields" to FIELDS, "genreIds" to genreId,
+            "years" to years, "studioIds" to studioId,
         )
     )
+
+    /** Gêneros que existem na biblioteca (vêm do TMDB, no idioma configurado no Jellyfin). */
+    suspend fun genres(parentId: String, types: String): List<Item> = items(
+        "/Genres",
+        mapOf(
+            "userId" to s.userId, "parentId" to parentId, "includeItemTypes" to types,
+            "sortBy" to "SortName", "sortOrder" to "Ascending", "enableImages" to false,
+        )
+    ).items
+
+    /** Biblioteca inteira com país de produção e tags (para os filtros Anime e Dorama, que não são gênero no TMDB). */
+    suspend fun libraryAll(
+        parentId: String, types: String, sortBy: String, descending: Boolean, years: String? = null, studioId: String? = null,
+    ): List<Item> = items(
+        "/Items",
+        mapOf(
+            "userId" to s.userId, "parentId" to parentId, "recursive" to true,
+            "includeItemTypes" to types, "sortBy" to sortBy,
+            "sortOrder" to if (descending) "Descending" else "Ascending",
+            "fields" to "Genres,ProductionYear,ProductionLocations,Tags,PrimaryImageAspectRatio,CommunityRating",
+            "enableTotalRecordCount" to false, "years" to years, "studioIds" to studioId,
+        )
+    ).items
+
+    /** Estúdios/produtoras que existem na biblioteca. */
+    suspend fun studios(parentId: String, types: String): List<Item> = items(
+        "/Studios",
+        mapOf(
+            "userId" to s.userId, "parentId" to parentId, "includeItemTypes" to types,
+            "sortBy" to "SortName", "sortOrder" to "Ascending", "enableImages" to false,
+        )
+    ).items
 
     suspend fun item(id: String): Item =
         AppJson.decodeFromString(Item.serializer(), getText("/Items/$id", mapOf("userId" to s.userId)))

@@ -53,6 +53,9 @@ import com.pecbox.streambox.ui.MemCache
 import com.pecbox.streambox.ui.Nav
 import com.pecbox.streambox.ui.Route
 import com.pecbox.streambox.ui.components.Chip
+import com.pecbox.streambox.ui.components.FilterBar
+import com.pecbox.streambox.ui.components.FilterMenu
+import com.pecbox.streambox.ui.ChannelGenres
 import com.pecbox.streambox.ui.components.ErrorBox
 import com.pecbox.streambox.ui.components.Loading
 import com.pecbox.streambox.ui.components.SbButton
@@ -86,6 +89,7 @@ fun LiveTvScreen(nav: Nav) {
         else -> 0
     }
     var group by rememberSaveable { mutableStateOf("") }
+    var genre by rememberSaveable { mutableStateOf("") }
     var filter by rememberSaveable { mutableStateOf("") }
 
     // Relógio para atualizar "agora / depois" e as barras de progresso
@@ -101,8 +105,8 @@ fun LiveTvScreen(nav: Nav) {
         Column(Modifier.padding(horizontal = pad, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text("TV ao vivo", style = MaterialTheme.typography.headlineMedium)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                Chip("Jellyfin", selected = tab == 0, onClick = { tabChoice = 0; group = "" })
-                Chip("Minha lista", selected = tab == 1, onClick = { tabChoice = 1; group = "" })
+                Chip("Jellyfin", selected = tab == 0, onClick = { tabChoice = 0; group = ""; genre = "" })
+                Chip("Minha lista", selected = tab == 1, onClick = { tabChoice = 1; group = ""; genre = "" })
                 // Último canal assistido: abre direto nele (como ligar o decodificador)
                 val ctx = LocalContext.current
                 val last = remember { LiveQueue.loadLast(ctx) }
@@ -121,7 +125,7 @@ fun LiveTvScreen(nav: Nav) {
         }
 
         if (tab == 0) {
-            JellyfinChannels(jfLoader.data, jfLoader.error, jfLoader.loading, filter, now, pad, onRetry = { jfLoader.reload() })
+            JellyfinChannels(jfLoader.data, jfLoader.error, jfLoader.loading, filter, genre, { genre = it }, now, pad, onRetry = { jfLoader.reload() })
         } else if (!hasExternal) {
             Column(Modifier.padding(pad), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text("Nenhuma lista configurada.", style = MaterialTheme.typography.titleLarge)
@@ -132,7 +136,7 @@ fun LiveTvScreen(nav: Nav) {
                 SbButton("Abrir Ajustes", onClick = { nav.root(Route.Settings) })
             }
         } else {
-            ExternalChannels(group, { group = it }, filter, now, pad)
+            ExternalChannels(group, { group = it }, genre, { genre = it }, filter, now, pad)
         }
     }
 }
@@ -141,8 +145,8 @@ fun LiveTvScreen(nav: Nav) {
 
 @Composable
 private fun JellyfinChannels(
-    data: List<Item>?, error: String?, loading: Boolean, filter: String, now: Long, pad: androidx.compose.ui.unit.Dp,
-    onRetry: () -> Unit,
+    data: List<Item>?, error: String?, loading: Boolean, filter: String, genre: String, onGenre: (String) -> Unit,
+    now: Long, pad: androidx.compose.ui.unit.Dp, onRetry: () -> Unit,
 ) {
     val jf = App.session.jellyfin
     val ctx = LocalContext.current
@@ -151,7 +155,14 @@ private fun JellyfinChannels(
         data == null || (loading && data.isEmpty()) -> Loading()
         data.isEmpty() -> ErrorBox("Nenhum canal configurado no Jellyfin (Painel → TV ao vivo).")
         else -> {
-            val list = data.filter { filter.isBlank() || it.name.contains(filter, ignoreCase = true) }
+            val genreOf = remember(data) { data.associate { it.id to ChannelGenres.classify(it.name) } }
+            val list = data.filter {
+                (genre.isBlank() || genreOf[it.id] == genre) && (filter.isBlank() || it.name.contains(filter, ignoreCase = true))
+            }
+            Column(Modifier.fillMaxSize()) {
+            FilterBar(Modifier.padding(horizontal = pad)) {
+                FilterMenu("Gênero", genreOptions(genreOf.values), genre, onGenre)
+            }
             LazyColumn(contentPadding = PaddingValues(horizontal = pad, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 items(list, key = { it.id }) { ch ->
                     val prog = ch.currentProgram
@@ -171,6 +182,7 @@ private fun JellyfinChannels(
                                 val p = c.currentProgram
                                 LiveQueue.Entry(
                                     c.name, jf.channelLogo(c), p?.name, jfId = c.id, number = c.channelNumber,
+                                    group = genreOf[c.id],
                                     nowStart = parseIso(p?.startDate) ?: 0L, nowEnd = parseIso(p?.endDate) ?: 0L,
                                 )
                             }
@@ -179,6 +191,7 @@ private fun JellyfinChannels(
                     )
                 }
             }
+            }
         }
     }
 }
@@ -186,7 +199,10 @@ private fun JellyfinChannels(
 /* ------------------------------ Lista M3U externa ------------------------------ */
 
 @Composable
-private fun ExternalChannels(group: String, onGroup: (String) -> Unit, filter: String, now: Long, pad: androidx.compose.ui.unit.Dp) {
+private fun ExternalChannels(
+    group: String, onGroup: (String) -> Unit, genre: String, onGenre: (String) -> Unit,
+    filter: String, now: Long, pad: androidx.compose.ui.unit.Dp,
+) {
     val s = App.session
     val ctx = LocalContext.current
     val key = "live:ext:${s.m3uUrl}|${s.epgUrl}"
@@ -202,28 +218,28 @@ private fun ExternalChannels(group: String, onGroup: (String) -> Unit, filter: S
             val groups = remember(guide) {
                 guide.channels.groupingBy { it.group }.eachCount().toList().sortedBy { it.first.lowercase() }
             }
-            val list = remember(guide, group, filter) {
+            val genreOf = remember(guide) { guide.channels.associateWith { ChannelGenres.classify(it.name, it.group) } }
+            val list = remember(guide, group, genre, filter) {
                 guide.channels.filter {
-                    (group.isBlank() || it.group == group) && (filter.isBlank() || it.name.contains(filter, ignoreCase = true))
+                    (group.isBlank() || it.group == group) && (genre.isBlank() || genreOf[it] == genre) &&
+                        (filter.isBlank() || it.name.contains(filter, ignoreCase = true))
                 }
             }
             Column(Modifier.fillMaxSize()) {
-                LazyRow(
-                    contentPadding = PaddingValues(horizontal = pad),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    item { Chip("Todos · ${guide.channels.size}", selected = group.isBlank(), onClick = { onGroup("") }) }
-                    items(groups, key = { it.first }) { (name, count) ->
-                        Chip("$name · $count", selected = group == name, onClick = { onGroup(name) })
+                Row(Modifier.padding(horizontal = pad), verticalAlignment = Alignment.CenterVertically) {
+                    FilterBar(Modifier.weight(1f, fill = false)) {
+                        FilterMenu("Gênero", genreOptions(genreOf.values), genre, onGenre)
+                        if (groups.size > 1) {
+                            FilterMenu("Grupo da lista",
+                                listOf("" to "Todos · ${guide.channels.size}") + groups.map { (name, count) -> name to "$name · $count" },
+                                group, onGroup)
+                        }
                     }
-                    item {
-                        SbButton("Atualizar", onClick = {
-                            s.externalTv.clearCache()
-                            MemCache.map.remove(key)
-                            loader.reload()
-                        }, icon = Icons.Filled.Refresh, primary = false)
-                    }
+                    SbButton("Atualizar", onClick = {
+                        s.externalTv.clearCache()
+                        MemCache.map.remove(key)
+                        loader.reload()
+                    }, icon = Icons.Filled.Refresh, primary = false)
                 }
                 LazyColumn(
                     contentPadding = PaddingValues(horizontal = pad, vertical = 12.dp),
@@ -246,7 +262,7 @@ private fun ExternalChannels(group: String, onGroup: (String) -> Unit, filter: S
                                     val nx = guide.next(c, now)
                                     LiveQueue.Entry(
                                         c.name, c.logo, cur?.title, url = c.url, userAgent = c.userAgent, referer = c.referer,
-                                        number = c.number, group = c.group,
+                                        number = c.number, group = genreOf[c] ?: c.group,
                                         nowStart = cur?.start ?: 0L, nowEnd = cur?.stop ?: 0L,
                                         next = nx?.let { "${hhmm(it.start)}  ${it.title}" },
                                     )
@@ -319,6 +335,13 @@ private fun ChannelRow(
 /* ------------------------------ datas ------------------------------ */
 
 private val isoFormat = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US).apply { timeZone = TimeZone.getTimeZone("UTC") }
+
+/** Opções do filtro de gênero (só os que existem na lista), com a contagem. */
+private fun genreOptions(all: Collection<String>): List<Pair<String, String>> {
+    val counts = all.groupingBy { it }.eachCount()
+    return listOf("" to "Todos · ${all.size}") +
+        ChannelGenres.ORDER.filter { (counts[it] ?: 0) > 0 }.map { it to "$it · ${counts[it]}" }
+}
 
 private fun parseIso(v: String?): Long? = v?.let { runCatching { isoFormat.parse(it.take(19))?.time }.getOrNull() }
 

@@ -112,7 +112,7 @@ fun SearchScreen(nav: Nav) {
             items(library, key = { "lib:" + it.id }) { item ->
                 MediaCard(
                     title = item.name, subtitle = listOfNotNull(if (item.isSeries) "Série" else "Filme", item.year?.toString()).joinToString(" · "),
-                    image = s.jellyfin.posterImage(item), width = cell, progress = item.progress,
+                    image = s.jellyfin.posterImage(item), width = cell, progress = item.progress, rating = item.rating,
                     onClick = { nav.push(Route.Details(item.id)) },
                 )
             }

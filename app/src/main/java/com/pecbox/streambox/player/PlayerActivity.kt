@@ -503,8 +503,38 @@ class PlayerActivity : ComponentActivity() {
             buttons.reversed().forEach { basic.addView(it, 0) }
         } else {
             buttons.forEach { optionsBar.addView(it) }
-            view.setControllerVisibilityListener(PlayerView.ControllerVisibilityListener { v -> optionsBar.visibility = v })
         }
+        // Celular/tablet: "voltar" no canto superior esquerdo (e, na TV ao vivo, a lista de canais).
+        // Na TV o controle remoto já tem o botão voltar.
+        val tvBox = (getSystemService(UI_MODE_SERVICE) as android.app.UiModeManager).currentModeType ==
+            android.content.res.Configuration.UI_MODE_TYPE_TELEVISION
+        val top = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            visibility = View.GONE
+            addView(roundButton(R.drawable.ic_sb_back, "Voltar") { finish() })
+            if (isLive) addView(roundButton(R.drawable.ic_sb_list, "Canais") { openSide() },
+                LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginStart = dp(10) })
+        }
+        if (!tvBox) {
+            (view.parent as? FrameLayout)?.addView(top, FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.START,
+            ).apply { setMargins(dp(14), dp(14), 0, 0) })
+        }
+        view.setControllerVisibilityListener(PlayerView.ControllerVisibilityListener { v ->
+            if (basic == null) optionsBar.visibility = v
+            top.visibility = if (tvBox) View.GONE else v
+        })
+    }
+
+    /** Botão redondo semitransparente (voltar / canais) para telas de toque. */
+    private fun roundButton(icon: Int, label: String, onClick: () -> Unit): ImageButton = ImageButton(this).apply {
+        setImageResource(icon)
+        contentDescription = label
+        scaleType = ImageView.ScaleType.CENTER_INSIDE
+        setPadding(dp(12), dp(12), dp(12), dp(12))
+        background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(0x99000000.toInt()) }
+        minimumWidth = dp(48); minimumHeight = dp(48)
+        setOnClickListener { onClick() }
     }
 
     private fun iconButton(icon: Int, label: String, onClick: () -> Unit): ImageButton = ImageButton(this).apply {
@@ -885,7 +915,11 @@ class PlayerActivity : ComponentActivity() {
             .apply { setMargins(dp(40), 0, dp(40), dp(28)) })
 
         // Lista lateral (OK): canais com número, logo, "agora" e "a seguir"; ←/→ troca o grupo
-        sideGroup = tv(18f, bold = true).apply { setPadding(dp(24), dp(28), dp(24), dp(12)) }
+        sideGroup = tv(18f, bold = true).apply {
+            setPadding(dp(24), dp(28), dp(24), dp(12))
+            // toque: troca o gênero (no controle remoto é ←/→)
+            setOnClickListener { if (groups.size > 1) { groupIdx = (groupIdx + 1) % groups.size; renderSide() } }
+        }
         sideList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(12), 0, dp(12), dp(24)) }
         sideScroll = android.widget.ScrollView(this).apply { isVerticalScrollBarEnabled = false; addView(sideList) }
         sidePanel = LinearLayout(this).apply {

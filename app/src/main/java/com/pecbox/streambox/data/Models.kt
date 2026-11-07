@@ -44,6 +44,8 @@ data class Item(
     @SerialName("CommunityRating") val rating: Double? = null,
     @SerialName("OfficialRating") val officialRating: String? = null,
     @SerialName("Genres") val genres: List<String> = emptyList(),
+    @SerialName("ProductionLocations") val productionLocations: List<String> = emptyList(),
+    @SerialName("Tags") val tags: List<String> = emptyList(),
     @SerialName("SeriesId") val seriesId: String? = null,
     @SerialName("SeriesName") val seriesName: String? = null,
     @SerialName("SeasonId") val seasonId: String? = null,

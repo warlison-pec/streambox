@@ -120,6 +120,8 @@ fun Chip(text: String, selected: Boolean, onClick: () -> Unit, modifier: Modifie
     }
 }
 
+private val RatingGold = Color(0xFFFFC94D)
+
 /** Imagem com fundo e iniciais enquanto carrega (ou se não houver capa). */
 @Composable
 fun Artwork(url: String?, title: String, modifier: Modifier = Modifier) {
@@ -152,6 +154,7 @@ fun MediaCard(
     played: Boolean = false,
     onFocus: (() -> Unit)? = null,
     showText: Boolean = true,          // TV inicial: o título aparece no destaque, não embaixo da capa
+    rating: Double? = null,            // nota (CommunityRating do Jellyfin): "★ 8.7" no canto da capa
 ) {
     val shape = RoundedCornerShape(10.dp)
     Column(modifier.width(width)) {
@@ -176,6 +179,21 @@ fun MediaCard(
                     Modifier.align(Alignment.TopEnd).padding(6.dp).size(22.dp).clip(CircleShape).background(Orange),
                     contentAlignment = Alignment.Center
                 ) { Icon(Icons.Filled.Check, contentDescription = "Assistido", tint = Color.Black, modifier = Modifier.size(16.dp)) }
+            }
+            if (rating != null && rating > 0) {
+                Row(
+                    Modifier.align(Alignment.BottomStart).padding(start = 6.dp, bottom = if (progress > 0f) 10.dp else 6.dp)
+                        .clip(RoundedCornerShape(50)).background(Color.Black.copy(alpha = 0.72f))
+                        .border(1.dp, RatingGold.copy(alpha = 0.45f), RoundedCornerShape(50))
+                        .padding(horizontal = 7.dp, vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("★", color = RatingGold, style = MaterialTheme.typography.labelMedium)
+                    Text(
+                        String.format(java.util.Locale.US, " %.1f", rating), color = Color.White,
+                        style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold,
+                    )
+                }
             }
             if (progress > 0f) {
                 Box(Modifier.align(Alignment.BottomStart).fillMaxWidth().height(4.dp).background(Color.Black.copy(alpha = 0.6f))) {
