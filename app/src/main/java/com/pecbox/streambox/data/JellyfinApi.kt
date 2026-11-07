@@ -135,13 +135,16 @@ class JellyfinApi(private val s: Session) {
         mapOf("userId" to s.userId, "limit" to limit, "fields" to FIELDS, "enableTotalRecordCount" to false)
     ).items
 
+    /** Tela inicial com "ocultar assistidos" ligado: o Jellyfin já devolve só o que falta ver. */
+    private fun unplayedOnly(): Boolean? = if (s.hideWatched) false else null
+
     /** "Minha lista": filmes e séries marcados como favoritos no Jellyfin. */
     suspend fun favorites(limit: Int = 40): List<Item> = items(
         "/Items",
         mapOf(
             "userId" to s.userId, "recursive" to true, "filters" to "IsFavorite",
             "includeItemTypes" to "Movie,Series", "sortBy" to "SortName", "sortOrder" to "Ascending",
-            "limit" to limit, "fields" to FIELDS, "enableTotalRecordCount" to false,
+            "limit" to limit, "fields" to FIELDS, "enableTotalRecordCount" to false, "isPlayed" to unplayedOnly(),
         )
     ).items
 
@@ -159,7 +162,7 @@ class JellyfinApi(private val s: Session) {
         mapOf(
             "userId" to s.userId, "recursive" to true, "includeItemTypes" to type,
             "sortBy" to "Random", "imageTypes" to "Backdrop", "limit" to limit,
-            "fields" to FIELDS, "enableTotalRecordCount" to false
+            "fields" to FIELDS, "enableTotalRecordCount" to false, "isPlayed" to unplayedOnly(),
         )
     ).items
 
@@ -168,7 +171,7 @@ class JellyfinApi(private val s: Session) {
         mapOf(
             "userId" to s.userId, "parentId" to parentId, "recursive" to true,
             "includeItemTypes" to types, "sortBy" to "DateCreated", "sortOrder" to "Descending",
-            "limit" to limit, "fields" to FIELDS, "enableTotalRecordCount" to false
+            "limit" to limit, "fields" to FIELDS, "enableTotalRecordCount" to false, "isPlayed" to unplayedOnly(),
         )
     ).items
 

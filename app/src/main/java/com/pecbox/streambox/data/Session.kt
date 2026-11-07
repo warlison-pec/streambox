@@ -69,6 +69,11 @@ class Session(context: Context) {
         get() = prefs.getInt("sub_bg", 0)
         set(v) = prefs.edit().putInt("sub_bg", v).apply()
 
+    /** Tela inicial: esconder filmes e séries já assistidos (vem ligado; o usuário pode desligar em Ajustes). */
+    var hideWatched: Boolean
+        get() = prefs.getBoolean("hide_watched_home", true)
+        set(v) = prefs.edit().putBoolean("hide_watched_home", v).apply()
+
     /** Proteção de tela: minutos sem uso até iniciar (0 = desligada). */
     var screensaverMinutes: Int
         get() = prefs.getInt("screensaver_min", 5)

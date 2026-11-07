@@ -102,7 +102,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
-private class HomeData(
+private data class HomeData(
     val featured: List<Item>,
     val resume: List<Item>,
     val nextUp: List<Item>,
@@ -130,7 +130,14 @@ fun HomeScreen(nav: Nav) {
             HomeData(featured, resume.await(), next.await(), favs.await(), latest.map { (n, d) -> n to d.await() })
         }
     }
-    val data = home.data
+    // "Ocultar assistidos" (Ajustes): o que for marcado como visto agora some na hora, sem recarregar
+    val hide = App.session.hideWatched
+    fun List<Item>.unseen() = if (hide) filterNot { Watched.isPlayed(it) } else this
+    val raw = home.data
+    val homeData = raw?.let { d ->
+        d.copy(featured = d.featured.unseen(), favorites = d.favorites.unseen(), latest = d.latest.map { (n, l) -> n to l.unseen() })
+    }
+    val data = homeData
     when {
         data == null && home.error != null -> ErrorBox(home.error ?: "", onRetry = { home.reload() })
         data == null -> Loading()

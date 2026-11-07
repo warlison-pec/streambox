@@ -72,6 +72,7 @@ fun SettingsScreen() {
     var subColor by rememberSaveable { mutableStateOf(s.subColor) }
     var subBg by rememberSaveable { mutableStateOf(s.subBackground) }
     var saver by rememberSaveable { mutableStateOf(s.screensaverMinutes) }
+    var hideWatched by rememberSaveable { mutableStateOf(s.hideWatched) }
 
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(if (tv) 40.dp else 16.dp).widthIn(max = 720.dp),
@@ -141,6 +142,13 @@ fun SettingsScreen() {
         OptionRow("Cor", SubtitleStyle.COLORS.map { it.first }, subColor) { subColor = it; s.subColor = it }
         OptionRow("Fundo", SubtitleStyle.BACKGROUNDS, subBg) { subBg = it; s.subBackground = it }
         Text("Também dá para mudar durante o vídeo: ícone de legendas → Aparência da legenda.", color = TextMuted)
+
+        Text("Tela inicial", style = MaterialTheme.typography.titleLarge)
+        Text("Esconde dos destaques, da Minha lista e de \"Adicionados em…\" os filmes e séries que você já assistiu.", color = TextMuted)
+        OptionRow("Ocultar assistidos", listOf("Ligado", "Desligado"), if (hideWatched) 0 else 1) {
+            hideWatched = it == 0; s.hideWatched = hideWatched
+            MemCache.map.remove("home")   // recarrega o início com a nova escolha
+        }
 
         Text("Proteção de tela", style = MaterialTheme.typography.titleLarge)
         Text("Mostra imagens do catálogo quando o app fica parado (sem nada tocando).", color = TextMuted)
