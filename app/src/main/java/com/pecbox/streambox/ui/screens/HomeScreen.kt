@@ -1,5 +1,19 @@
+@file:OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+
 package com.pecbox.streambox.ui.screens
 
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.Key
+import androidx.compose.foundation.layout.wrapContentHeight
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.foundation.gestures.LocalBringIntoViewSpec
+import androidx.compose.foundation.gestures.BringIntoViewSpec
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -34,6 +48,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Bookmark
+import androidx.compose.material.icons.outlined.BookmarkBorder
+import com.pecbox.streambox.ui.Favorites
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.outlined.CheckCircle
@@ -89,6 +106,7 @@ private class HomeData(
     val featured: List<Item>,
     val resume: List<Item>,
     val nextUp: List<Item>,
+    val favorites: List<Item>,
     val latest: List<Pair<String, List<Item>>>,
 )
 
@@ -99,6 +117,7 @@ fun HomeScreen(nav: Nav) {
         coroutineScope {
             val resume = async { runCatching { jf.resume() }.getOrDefault(emptyList()) }
             val next = async { runCatching { jf.nextUp() }.getOrDefault(emptyList()) }
+            val favs = async { runCatching { jf.favorites() }.getOrDefault(emptyList()) }
             val movies = async { runCatching { jf.featured("Movie", 6) }.getOrDefault(emptyList()) }
             val series = async { runCatching { jf.featured("Series", 6) }.getOrDefault(emptyList()) }
             val libs = jf.views().filter { libraryItemTypes(it.collectionType) != null && it.collectionType != "boxsets" }
@@ -108,7 +127,7 @@ fun HomeScreen(nav: Nav) {
             // Intercala filmes e séries nos destaques (até 12)
             val m = movies.await(); val sr = series.await()
             val featured = (0 until maxOf(m.size, sr.size)).flatMap { i -> listOfNotNull(m.getOrNull(i), sr.getOrNull(i)) }
-            HomeData(featured, resume.await(), next.await(), latest.map { (n, d) -> n to d.await() })
+            HomeData(featured, resume.await(), next.await(), favs.await(), latest.map { (n, d) -> n to d.await() })
         }
     }
     val data = home.data
@@ -148,10 +167,23 @@ private fun focusOf(onFocus: ((Item) -> Unit)?, item: Item): (() -> Unit)? =
  * Tamanho das fileiras na TV: [poster] = altura da capa; [rowFocus] recebe o índice da fileira
  * que ganhou foco (para subir essa fileira até o topo da área de baixo, sem cortar as capas).
  */
-private class TvRows(val poster: Dp, val endSpace: Dp, val rowFocus: (Int) -> Unit)
+@OptIn(ExperimentalFoundationApi::class)
+private class TvRows(
+    val poster: Dp, val rowH: Dp, val endSpace: Dp,
+    val spec: BringIntoViewSpec,            // rolagem padrão, devolvida às fileiras horizontais
+    val rowFocus: (Int) -> Unit,
+)
 
+/** Na TV: fileira com altura fixa (cabe inteira) e que avisa quando ganha foco. */
 private fun Modifier.rowFocus(tv: TvRows?, index: Int): Modifier =
-    if (tv == null) this else onFocusChanged { if (it.hasFocus) tv.rowFocus(index) }
+    if (tv == null) this else height(tv.rowH).onFocusChanged { if (it.hasFocus) tv.rowFocus(index) }
+
+/** Devolve a rolagem automática padrão dentro da fileira (os cartões seguem o foco para os lados). */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun RowSpec(tv: TvRows?, content: @Composable () -> Unit) {
+    if (tv == null) content() else CompositionLocalProvider(LocalBringIntoViewSpec provides tv.spec, content = content)
+}
 
 private fun LazyListScope.homeRows(data: HomeData, nav: Nav, ctx: Context, onFocus: ((Item) -> Unit)?, tvRows: TvRows? = null) {
     val jf = App.session.jellyfin
@@ -160,7 +192,7 @@ private fun LazyListScope.homeRows(data: HomeData, nav: Nav, ctx: Context, onFoc
     // capas: altura calculada pela tela na TV; no celular, larguras fixas como antes
     val posterW = tvRows?.let { it.poster * 2f / 3f }
     val wideW = tvRows?.let { it.poster * 0.82f * 16f / 9f }
-    item {
+    item { RowSpec(tvRows) {
         val tv = LocalIsTv.current
         MediaRow("Continuar assistindo", data.resume, Modifier.rowFocus(tvRows, 0), topPad) {
             MediaCard(
@@ -172,8 +204,8 @@ private fun LazyListScope.homeRows(data: HomeData, nav: Nav, ctx: Context, onFoc
                 onClick = { ctx.play(it) },
             )
         }
-    }
-    item {
+    } }
+    item { RowSpec(tvRows) {
         val tv = LocalIsTv.current
         MediaRow("Próximos episódios", data.nextUp, Modifier.rowFocus(tvRows, 1), topPad) {
             MediaCard(
@@ -185,9 +217,9 @@ private fun LazyListScope.homeRows(data: HomeData, nav: Nav, ctx: Context, onFoc
                 onClick = { if (tv) ctx.play(it) else nav.push(Route.Details(it.id)) },
             )
         }
-    }
-    itemsIndexed(data.latest) { i, (name, list) ->
-        MediaRow("Adicionados em $name", list, Modifier.rowFocus(tvRows, 2 + i), topPad) {
+    } }
+    item { RowSpec(tvRows) {
+        MediaRow("Minha lista", data.favorites.filter { Favorites.isFavorite(it) }, Modifier.rowFocus(tvRows, 2), topPad) {
             MediaCard(
                 title = it.name, subtitle = it.year?.toString(), image = jf.posterImage(it),
                 showText = text, width = posterW ?: if (LocalIsTv.current) 150.dp else 112.dp,
@@ -197,9 +229,39 @@ private fun LazyListScope.homeRows(data: HomeData, nav: Nav, ctx: Context, onFoc
                 onClick = { nav.push(Route.Details(it.id)) },
             )
         }
-    }
+    } }
+    itemsIndexed(data.latest) { i, (name, list) -> RowSpec(tvRows) {
+        MediaRow("Adicionados em $name", list, Modifier.rowFocus(tvRows, 3 + i), topPad) {
+            MediaCard(
+                title = it.name, subtitle = it.year?.toString(), image = jf.posterImage(it),
+                showText = text, width = posterW ?: if (LocalIsTv.current) 150.dp else 112.dp,
+                badge = it.userData?.unplayed?.takeIf { n -> n > 0 && !Watched.isPlayed(it) }?.toString(),
+                played = Watched.isPlayed(it),
+                onFocus = focusOf(onFocus, it),
+                onClick = { nav.push(Route.Details(it.id)) },
+            )
+        }
+    } }
     // espaço no fim para que a última fileira também consiga subir até o topo
     item { Spacer(Modifier.height(tvRows?.endSpace ?: 48.dp)) }
+}
+
+/** Botão "Minha lista" (favoritos do Jellyfin). */
+@Composable
+private fun FavoriteButton(item: Item, onChanged: () -> Unit, compact: Boolean = false) {
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val fav = Favorites.isFavorite(item)
+    val label = if (fav) "Na Minha lista" else "Minha lista"
+    val icon = if (fav) Icons.Filled.Bookmark else Icons.Outlined.BookmarkBorder
+    if (compact) {
+        RoundIcon(icon, label, tint = if (fav) Success else Color.White) {
+            scope.launch { if (Favorites.toggle(ctx, item) != null) onChanged() }
+        }
+    } else {
+        SbButton(label, primary = false, icon = icon,
+            onClick = { scope.launch { if (Favorites.toggle(ctx, item) != null) onChanged() } })
+    }
 }
 
 /** Botão "visto / não visto". */
@@ -253,15 +315,25 @@ private fun TvHome(data: HomeData, slides: List<Item>, nav: Nav, onChanged: () -
     val spot = focused ?: slides.getOrNull(slide) ?: data.resume.firstOrNull() ?: data.latest.firstOrNull()?.second?.firstOrNull()
 
     BoxWithConstraints(Modifier.fillMaxSize().background(Black)) {
-        // Divide a tela: destaque em cima, uma fileira inteira de capas embaixo (qualquer TV/densidade)
-        val spotH = (maxHeight * 0.5f).coerceIn(230.dp, 360.dp)
-        val rowsH = maxHeight - spotH
-        // fileira = título (~30) + margens do foco (~30) + capa
-        val posterH = (rowsH - 66.dp).coerceIn(120.dp, 300.dp)
+        /* Dois estados (como sugerido para a TV):
+           - foco no destaque: destaque grande com os botões e as fileiras espiando embaixo;
+           - foco nas fileiras: o destaque vira uma faixa (título, dados e sinopse do item em foco)
+             e as fileiras ganham o resto da tela; a fileira em foco fica inteira no topo. */
+        var browsing by remember { mutableStateOf(false) }
+        var curRow by remember { mutableIntStateOf(-1) }
+        val firstRow = when { data.resume.isNotEmpty() -> 0; data.nextUp.isNotEmpty() -> 1; data.favorites.isNotEmpty() -> 2; else -> 3 }
+        val fullH = (maxHeight * 0.5f).coerceIn(230.dp, 380.dp)
+        val compactH = (maxHeight * 0.33f).coerceIn(170.dp, 250.dp)
+        val headerH by animateDpAsState(if (browsing) compactH else fullH, tween(300), label = "header")
+        // fileira = título + margens do foco (~72) + capa; sobra um pedaço da próxima fileira
+        val posterH = ((maxHeight - compactH - 72.dp) * 0.82f).coerceIn(120.dp, 330.dp)
+        val rowH = posterH + 72.dp
         val listState = rememberLazyListState()
         val scope = rememberCoroutineScope()
-        val tvRows = remember(posterH, rowsH) {
-            TvRows(posterH, rowsH) { index ->
+        val defaultSpec = LocalBringIntoViewSpec.current
+        val tvRows = remember(posterH, defaultSpec) {
+            TvRows(posterH, rowH, maxHeight, defaultSpec) { index ->
+                curRow = index
                 scope.launch { runCatching { listState.animateScrollToItem(index) } }
             }
         }
@@ -287,16 +359,41 @@ private fun TvHome(data: HomeData, slides: List<Item>, nav: Nav, onChanged: () -
         )
 
         Column(Modifier.fillMaxSize()) {
-            if (spot != null) Spotlight(spot, nav, playFocus, onChanged, Modifier.height(spotH))
-            LazyColumn(Modifier.weight(1f), state = listState) {
-                homeRows(data, nav, ctx, onFocus = { pending = it }, tvRows = tvRows)
+            // os botões continuam no lugar (cortados) na faixa compacta: ↑ na primeira fileira volta para eles
+            Box(Modifier.fillMaxWidth().height(headerH).clipToBounds()) {
+                if (spot != null) Spotlight(
+                    spot, nav, playFocus, onChanged,
+                    Modifier.wrapContentHeight(Alignment.Top, unbounded = true).height(fullH), compact = browsing,
+                )
+            }
+            // sem rolagem automática na vertical: quem posiciona é a fileira em foco (sempre no topo)
+            CompositionLocalProvider(LocalBringIntoViewSpec provides NoAutoScroll) {
+                LazyColumn(
+                    Modifier
+                        .weight(1f)
+                        .onFocusChanged { browsing = it.hasFocus }
+                        .onPreviewKeyEvent {
+                            // ↑ na primeira fileira: volta para os botões do destaque
+                            if (it.type == KeyEventType.KeyDown && it.key == Key.DirectionUp && curRow == firstRow) {
+                                runCatching { playFocus.requestFocus() }; true
+                            } else false
+                        },
+                    state = listState,
+                ) {
+                    homeRows(data, nav, ctx, onFocus = { pending = it }, tvRows = tvRows)
+                }
             }
         }
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
+private val NoAutoScroll = object : BringIntoViewSpec {
+    override fun calculateScrollDistance(offset: Float, size: Float, containerSize: Float): Float = 0f
+}
+
 @Composable
-private fun Spotlight(item: Item, nav: Nav, playFocus: FocusRequester, onChanged: () -> Unit, modifier: Modifier) {
+private fun Spotlight(item: Item, nav: Nav, playFocus: FocusRequester, onChanged: () -> Unit, modifier: Modifier, compact: Boolean = false) {
     val ctx = LocalContext.current
     val title = if (item.isEpisode) item.seriesName ?: item.name else item.name
     Column(
@@ -308,8 +405,8 @@ private fun Spotlight(item: Item, nav: Nav, playFocus: FocusRequester, onChanged
         if (item.isEpisode) Text(item.episodeLabel, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
         MetaRow(item)
         Text(
-            item.overview.orEmpty(), color = TextMuted, maxLines = if (item.isEpisode) 2 else 3,
-            overflow = TextOverflow.Ellipsis, modifier = Modifier.height(if (item.isEpisode) 44.dp else 66.dp)
+            item.overview.orEmpty(), color = TextMuted, maxLines = if (item.isEpisode || compact) 2 else 3,
+            overflow = TextOverflow.Ellipsis, modifier = Modifier.height(if (item.isEpisode || compact) 44.dp else 66.dp)
         )
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.padding(top = 4.dp)) {
             SbButton(
@@ -322,6 +419,7 @@ private fun Spotlight(item: Item, nav: Nav, playFocus: FocusRequester, onChanged
                 icon = Icons.Filled.PlayArrow, modifier = Modifier.focusRequester(playFocus)
             )
             SbButton("Detalhes", onClick = { nav.push(Route.Details(if (item.isEpisode) item.seriesId ?: item.id else item.id)) }, icon = Icons.Filled.Info, primary = false)
+            FavoriteButton(item, onChanged)
             WatchedButton(item, onChanged)
         }
     }
@@ -399,6 +497,7 @@ private fun HeroCarousel(slides: List<Item>, nav: Nav, onChanged: () -> Unit) {
                     onClick = { ctx.playOrOpen(item, nav) }, icon = Icons.Filled.PlayArrow,
                 )
                 SbButton("Detalhes", onClick = { nav.push(Route.Details(item.id)) }, icon = Icons.Filled.Info, primary = false)
+                FavoriteButton(item, onChanged, compact = true)
                 WatchedButton(item, onChanged, compact = true)
                 if (slides.size > 1) {
                     RoundIcon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, "Anterior") { go(-1) }

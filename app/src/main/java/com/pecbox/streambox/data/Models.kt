@@ -29,6 +29,7 @@ data class UserData(
     @SerialName("PlayedPercentage") val playedPercentage: Double? = null,
     @SerialName("Played") val played: Boolean = false,
     @SerialName("UnplayedItemCount") val unplayed: Int? = null,
+    @SerialName("IsFavorite") val isFavorite: Boolean = false,
 )
 
 @Serializable

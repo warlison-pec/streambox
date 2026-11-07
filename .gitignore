@@ -7,3 +7,4 @@ keystore/*.jks
 .idea/
 *.iml
 dist/
+*.zip

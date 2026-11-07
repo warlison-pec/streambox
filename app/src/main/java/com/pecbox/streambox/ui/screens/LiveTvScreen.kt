@@ -1,5 +1,7 @@
 package com.pecbox.streambox.ui.screens
 
+import androidx.compose.material.icons.filled.PlayArrow
+import com.pecbox.streambox.player.LiveQueue
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -101,6 +103,15 @@ fun LiveTvScreen(nav: Nav) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Chip("Jellyfin", selected = tab == 0, onClick = { tabChoice = 0; group = "" })
                 Chip("Minha lista", selected = tab == 1, onClick = { tabChoice = 1; group = "" })
+                // Último canal assistido: abre direto nele (como ligar o decodificador)
+                val ctx = LocalContext.current
+                val last = remember { LiveQueue.loadLast(ctx) }
+                if (last != null) {
+                    SbButton("Último canal: ${last.name}", onClick = {
+                        if (LiveQueue.entries.none { it.url == last.url && it.jfId == last.jfId }) LiveQueue.entries = listOf(last)
+                        LiveQueue.intent(ctx, last)?.let { ctx.startActivity(it) }
+                    }, icon = Icons.Filled.PlayArrow, primary = false)
+                }
             }
             SbTextField(
                 value = filter, onValueChange = { filter = it }, singleLine = true,
@@ -154,7 +165,17 @@ private fun JellyfinChannels(
                         nowTime = if (start != null && end != null) "${hhmm(start)} – ${hhmm(end)}" else null,
                         progress = if (start != null && end != null && end > start) ((now - start).toFloat() / (end - start)).coerceIn(0f, 1f) else 0f,
                         nextTitle = null,
-                        onClick = { ctx.playJellyfinChannel(ch) },
+                        onClick = {
+                            // a lista visível vai junto para o player (↓ mostra os outros canais)
+                            LiveQueue.entries = list.map { c ->
+                                val p = c.currentProgram
+                                LiveQueue.Entry(
+                                    c.name, jf.channelLogo(c), p?.name, jfId = c.id, number = c.channelNumber,
+                                    nowStart = parseIso(p?.startDate) ?: 0L, nowEnd = parseIso(p?.endDate) ?: 0L,
+                                )
+                            }
+                            ctx.playJellyfinChannel(ch)
+                        },
                     )
                 }
             }
@@ -219,7 +240,19 @@ private fun ExternalChannels(group: String, onGroup: (String) -> Unit, filter: S
                             nowTime = cur?.let { "${hhmm(it.start)} – ${hhmm(it.stop)}" },
                             progress = cur?.progress(now) ?: 0f,
                             nextTitle = next?.let { "${hhmm(it.start)} ${it.title}" },
-                            onClick = { ctx.playExternalChannel(ch.name, ch.url, ch.userAgent, ch.referer) },
+                            onClick = {
+                                LiveQueue.entries = list.map { c ->
+                                    val cur = guide.now(c, now)
+                                    val nx = guide.next(c, now)
+                                    LiveQueue.Entry(
+                                        c.name, c.logo, cur?.title, url = c.url, userAgent = c.userAgent, referer = c.referer,
+                                        number = c.number, group = c.group,
+                                        nowStart = cur?.start ?: 0L, nowEnd = cur?.stop ?: 0L,
+                                        next = nx?.let { "${hhmm(it.start)}  ${it.title}" },
+                                    )
+                                }
+                                ctx.playExternalChannel(ch.name, ch.url, ch.userAgent, ch.referer)
+                            },
                         )
                     }
                 }

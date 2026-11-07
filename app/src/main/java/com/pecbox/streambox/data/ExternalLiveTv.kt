@@ -24,6 +24,7 @@ data class Channel(
     // Cabeçalhos exigidos por alguns canais (#EXTVLCOPT, #EXTHTTP ou "url|User-Agent=…")
     val userAgent: String? = null,
     val referer: String? = null,
+    val number: String? = null,     // tvg-chno (número do canal na lista)
 )
 
 data class Programme(val title: String, val start: Long, val stop: Long) {
@@ -139,6 +140,7 @@ class ExternalLiveTv(private val s: Session, private val cacheDir: File) {
                                 tvgId = attrs["tvg-id"]?.ifBlank { null },
                                 userAgent = ua?.ifBlank { null },
                                 referer = referer?.ifBlank { null },
+                                number = attrs["tvg-chno"]?.trim()?.ifBlank { null },
                             )
                         }
                         title = null

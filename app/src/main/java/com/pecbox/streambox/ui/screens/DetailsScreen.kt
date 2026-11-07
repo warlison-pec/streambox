@@ -4,6 +4,9 @@ import android.content.Context
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import com.pecbox.streambox.ui.Watched
+import com.pecbox.streambox.ui.Favorites
+import androidx.compose.material.icons.filled.Bookmark
+import androidx.compose.material.icons.outlined.BookmarkBorder
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.runtime.rememberCoroutineScope
@@ -188,6 +191,13 @@ private fun DetailsContent(item: Item, nav: Nav, onChanged: () -> Unit) {
                             },
                             onClick = { toggle(item, if (item.isSeries) episodes else emptyList()) },
                             icon = if (played) Icons.Filled.CheckCircle else Icons.Outlined.CheckCircle,
+                            primary = false,
+                        )
+                        val fav = Favorites.isFavorite(item)
+                        SbButton(
+                            if (fav) "Na Minha lista" else "Minha lista",
+                            onClick = { scope.launch { Favorites.toggle(ctx, item) } },
+                            icon = if (fav) Icons.Filled.Bookmark else Icons.Outlined.BookmarkBorder,
                             primary = false,
                         )
                     }

@@ -166,6 +166,31 @@ class PlayerActivity : ComponentActivity() {
     private lateinit var episodesRow: LinearLayout
     private lateinit var seekOsd: TextView
     private var seekTarget = -1L           // posição acumulada enquanto o usuário aperta ←/→
+    private lateinit var http: DefaultHttpDataSource.Factory
+
+    // TV ao vivo com cara de TV a cabo
+    private var chIndex = -1               // canal atual na LiveQueue
+    private var lastChIndex = -1           // canal anterior (Voltar alterna)
+    private var pendingIndex = -1          // zapping: canal escolhido, sintoniza ao parar de apertar
+    private var numberBuf = ""
+    private var lastBackAt = 0L
+    private lateinit var infoBar: LinearLayout
+    private lateinit var infoNum: TextView
+    private lateinit var infoLogo: ImageView
+    private lateinit var infoName: TextView
+    private lateinit var infoNow: TextView
+    private lateinit var infoProg: android.widget.ProgressBar
+    private lateinit var infoNext: TextView
+    private lateinit var infoClock: TextView
+    private lateinit var sidePanel: LinearLayout
+    private lateinit var sideGroup: TextView
+    private lateinit var sideList: LinearLayout
+    private lateinit var sideScroll: android.widget.ScrollView
+    private var groups: List<String> = emptyList()
+    private var groupIdx = 0
+    private val hideInfo = Runnable { if (::infoBar.isInitialized) infoBar.visibility = View.GONE }
+    private val tuneTask = Runnable { if (pendingIndex >= 0) tuneTo(pendingIndex) }
+    private val numberTask = Runnable { tuneNumber() }
     private val seekCommit = Runnable { seekTarget = -1L }
     private val hideOsd = Runnable { if (::seekOsd.isInitialized) seekOsd.visibility = View.GONE }
 
@@ -224,15 +249,11 @@ class PlayerActivity : ComponentActivity() {
         installControls()
 
         // HTTP com User-Agent e redirecionamento http↔https (comum em listas IPTV)
-        val http = DefaultHttpDataSource.Factory()
-            .setUserAgent(intent.getStringExtra(EXTRA_UA)?.ifBlank { null } ?: "StreamBox/Android ExoPlayer")
+        http = DefaultHttpDataSource.Factory()
             .setAllowCrossProtocolRedirects(true)
             .setConnectTimeoutMs(15_000)
             .setReadTimeoutMs(30_000)
-        intent.getStringExtra(EXTRA_REFERER)?.ifBlank { null }?.let { ref ->
-            val origin = runCatching { Uri.parse(ref).let { "${it.scheme}://${it.authority}" } }.getOrNull()
-            http.setDefaultRequestProperties(buildMap { put("Referer", ref); if (origin != null) put("Origin", origin) })
-        }
+        applyHeaders(intent.getStringExtra(EXTRA_UA), intent.getStringExtra(EXTRA_REFERER))
         val renderers = DefaultRenderersFactory(this)
             .setEnableDecoderFallback(true)
             .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
@@ -257,7 +278,12 @@ class PlayerActivity : ComponentActivity() {
         exo.addListener(listener)
         player = exo
         view.player = EpisodePlayer(exo)
-        if (isLive) handler.postDelayed(liveWatchdog, 2000)
+        if (isLive) {
+            handler.postDelayed(liveWatchdog, 2000)
+            chIndex = LiveQueue.entries.indexOfFirst { (externalUrl != null && it.url == externalUrl) || (jfLive && it.jfId == itemId) }
+            LiveQueue.entries.getOrNull(chIndex)?.let { LiveQueue.saveLast(this, it) }
+            handler.postDelayed({ showInfo() }, 600)
+        }
 
         when {
             externalUrl != null -> load(externalUrl!!, 0, hls = externalUrl!!.contains(".m3u8"))
@@ -326,7 +352,7 @@ class PlayerActivity : ComponentActivity() {
                 }
             } catch (e: Exception) {
                 Toast.makeText(this@PlayerActivity, "Canal indisponível: ${e.friendly()}", Toast.LENGTH_LONG).show()
-                finish()
+                if (LiveQueue.entries.size < 2) finish()     // com outros canais, fica para o usuário trocar
             }
         }
     }
@@ -807,6 +833,304 @@ class PlayerActivity : ComponentActivity() {
             addView(scroll)
         }
         root.addView(episodesPanel, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM))
+        buildLiveViews(root)
+    }
+
+    /* ======================= TV ao vivo: faixa de informação e lista lateral ======================= */
+
+    private fun buildLiveViews(root: FrameLayout) {
+        fun tv(sizeSp: Float, color: Int = Color.WHITE, bold: Boolean = false) = TextView(this).apply {
+            setTextColor(color); setTextSize(TypedValue.COMPLEX_UNIT_SP, sizeSp)
+            if (bold) typeface = Typeface.DEFAULT_BOLD
+            maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END
+        }
+        // Faixa de informação (ao trocar de canal / OK), embaixo como num decodificador
+        infoNum = tv(34f, 0xFFFF7A00.toInt(), true).apply { minWidth = dp(70); gravity = Gravity.CENTER }
+        infoLogo = ImageView(this).apply {
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            setPadding(dp(8), dp(6), dp(8), dp(6))
+            background = GradientDrawable().apply { cornerRadius = dp(8).toFloat(); setColor(0xFF1E1E1E.toInt()) }
+        }
+        infoName = tv(22f, bold = true)
+        infoNow = tv(16f, 0xFFDDDDDD.toInt())
+        infoProg = android.widget.ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+            max = 1000
+            progressDrawable.setTint(0xFFFF7A00.toInt())
+        }
+        infoNext = tv(14f, 0xFF9A9A9A.toInt())
+        infoClock = tv(18f, bold = true)
+        val texts = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                addView(infoName, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                addView(infoClock)
+            })
+            addView(infoNow)
+            addView(infoProg, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(6)).apply { topMargin = dp(6); bottomMargin = dp(6) })
+            addView(infoNext)
+        }
+        infoBar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            visibility = View.GONE
+            setPadding(dp(18), dp(14), dp(22), dp(14))
+            background = GradientDrawable().apply { cornerRadius = dp(16).toFloat(); setColor(0xE6101010.toInt()) }
+            addView(infoNum)
+            addView(infoLogo, LinearLayout.LayoutParams(dp(112), dp(63)).apply { marginStart = dp(8); marginEnd = dp(16) })
+            addView(texts, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        }
+        root.addView(infoBar, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM)
+            .apply { setMargins(dp(40), 0, dp(40), dp(28)) })
+
+        // Lista lateral (OK): canais com número, logo, "agora" e "a seguir"; ←/→ troca o grupo
+        sideGroup = tv(18f, bold = true).apply { setPadding(dp(24), dp(28), dp(24), dp(12)) }
+        sideList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(12), 0, dp(12), dp(24)) }
+        sideScroll = android.widget.ScrollView(this).apply { isVerticalScrollBarEnabled = false; addView(sideList) }
+        sidePanel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+            background = GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, intArrayOf(0xF5000000.toInt(), 0xE6000000.toInt(), 0x00000000))
+            addView(sideGroup)
+            addView(sideScroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+        }
+        root.addView(sidePanel, FrameLayout.LayoutParams(dp(520), ViewGroup.LayoutParams.MATCH_PARENT, Gravity.START))
+    }
+
+    private fun headersOf(ua: String?, referer: String?): Map<String, String> = buildMap {
+        referer?.ifBlank { null }?.let { ref ->
+            put("Referer", ref)
+            runCatching { Uri.parse(ref).let { "${it.scheme}://${it.authority}" } }.getOrNull()?.let { put("Origin", it) }
+        }
+    }
+
+    /** Cabeçalhos do canal (User-Agent / Referer) para as próximas requisições. */
+    private fun applyHeaders(ua: String?, referer: String?) {
+        http.setUserAgent(ua?.ifBlank { null } ?: "StreamBox/Android ExoPlayer")
+        http.setDefaultRequestProperties(headersOf(ua, referer))
+    }
+
+    private fun fmtClock(ms: Long) = java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault()).format(java.util.Date(ms))
+
+    /** Mostra a faixa de informação de um canal (o atual ou o que está sendo escolhido). */
+    private fun showInfo(index: Int = chIndex, sticky: Boolean = false) {
+        val ch = LiveQueue.entries.getOrNull(index) ?: run {
+            // sem fila (canal aberto de outro lugar): mostra só o nome
+            if (title.isBlank()) return
+            LiveQueue.Entry(title, null, null)
+        }
+        infoNum.text = if (index >= 0) LiveQueue.numberOf(index) else ""
+        infoName.text = ch.name
+        infoLogo.setImageDrawable(null)
+        ch.logo?.let { url -> imageLoader.enqueue(ImageRequest.Builder(this).data(url).target(infoLogo).build()) }
+        infoLogo.visibility = if (ch.logo != null) View.VISIBLE else View.GONE
+        val now = System.currentTimeMillis()
+        val hasTimes = ch.nowEnd > ch.nowStart && ch.nowStart > 0
+        infoNow.text = when {
+            ch.now != null && hasTimes -> "${fmtClock(ch.nowStart)} – ${fmtClock(ch.nowEnd)}   ${ch.now}"
+            ch.now != null -> ch.now
+            else -> "Sem guia de programação"
+        }
+        infoProg.visibility = if (hasTimes) View.VISIBLE else View.GONE
+        if (hasTimes) infoProg.progress = (((now - ch.nowStart).toFloat() / (ch.nowEnd - ch.nowStart)).coerceIn(0f, 1f) * 1000).toInt()
+        infoNext.text = ch.next?.let { "A seguir: $it" } ?: ""
+        infoNext.visibility = if (ch.next != null) View.VISIBLE else View.GONE
+        infoClock.text = fmtClock(now)
+        infoBar.visibility = View.VISIBLE
+        handler.removeCallbacks(hideInfo)
+        if (!sticky) handler.postDelayed(hideInfo, 4500)
+    }
+
+    /** Sintoniza outro canal no mesmo player (rápido, sem fechar a tela). */
+    private fun tuneTo(index: Int) {
+        pendingIndex = -1
+        val ch = LiveQueue.entries.getOrNull(index) ?: return
+        if (index == chIndex) { showInfo(); return }
+        val p = player ?: return
+        if (chIndex >= 0) lastChIndex = chIndex
+        chIndex = index
+        // encerra a transmissão anterior no Jellyfin e zera o estado de reconexão
+        liveStreamId?.let { live -> App.scope.launch { runCatching { jf.closeLiveStream(live) } } }
+        liveStreamId = null
+        handler.removeCallbacks(stallTask)
+        reconnects = 0; reconnectPending = false; userPaused = false; frozenMs = 0
+        title = ch.name
+        p.stop()
+        applyHeaders(ch.userAgent, ch.referer)
+        when {
+            ch.jfId != null -> { itemId = ch.jfId; externalUrl = null; jfLive = true; startJellyfinLive() }
+            ch.url != null -> { itemId = null; externalUrl = ch.url; jfLive = false; load(ch.url, 0, hls = ch.url.contains(".m3u8")) }
+        }
+        LiveQueue.saveLast(this, ch)
+        showInfo()
+    }
+
+    /** Zapping (↑/↓): mostra o canal escolhido na hora e só sintoniza quando o usuário para de apertar. */
+    private fun zap(delta: Int) {
+        val n = LiveQueue.entries.size
+        if (n < 2) return
+        val base = if (pendingIndex >= 0) pendingIndex else chIndex.coerceAtLeast(0)
+        pendingIndex = ((base + delta) % n + n) % n
+        showInfo(pendingIndex)
+        handler.removeCallbacks(tuneTask)
+        handler.postDelayed(tuneTask, 450)
+    }
+
+    /** Teclas numéricas: junta os dígitos e sintoniza o canal com esse número. */
+    private fun typeDigit(d: Int) {
+        numberBuf = (numberBuf + d).takeLast(4)
+        seekOsd.text = "Canal  ${numberBuf}–"
+        seekOsd.visibility = View.VISIBLE
+        handler.removeCallbacks(hideOsd)
+        handler.removeCallbacks(numberTask)
+        handler.postDelayed(numberTask, 1500)
+    }
+
+    private fun tuneNumber() {
+        val typed = numberBuf.trimStart('0').ifBlank { "0" }
+        numberBuf = ""
+        seekOsd.visibility = View.GONE
+        val list = LiveQueue.entries
+        var idx = list.indexOfFirst { it.number?.trimStart('0') == typed }
+        if (idx < 0) idx = (typed.toIntOrNull() ?: 0) - 1          // sem números na lista: posição
+        if (idx in list.indices) tuneTo(idx) else Toast.makeText(this, "Canal $typed não encontrado", Toast.LENGTH_SHORT).show()
+    }
+
+    private val sideOpen get() = ::sidePanel.isInitialized && sidePanel.visibility == View.VISIBLE
+
+    private fun openSide() {
+        val list = LiveQueue.entries
+        if (list.isEmpty()) return
+        groups = listOf("Todos") + list.mapNotNull { it.group }.distinct()
+        if (groups.size == 2) groups = listOf("Todos")              // um grupo só: não precisa alternar
+        val curGroup = list.getOrNull(chIndex)?.group
+        groupIdx = if (groups.size > 1 && curGroup != null) groups.indexOf(curGroup).coerceAtLeast(0) else 0
+        view.hideController()
+        renderSide()
+        sidePanel.visibility = View.VISIBLE
+        handler.removeCallbacks(hideInfo)
+        showInfo(sticky = true)
+    }
+
+    private fun closeSide() {
+        sidePanel.visibility = View.GONE
+        handler.postDelayed(hideInfo, 1500)
+    }
+
+    /** Monta as linhas do grupo escolhido (com uma janela em volta do canal atual em listas grandes). */
+    private fun renderSide() {
+        val list = LiveQueue.entries
+        val g = groups.getOrNull(groupIdx) ?: "Todos"
+        val idxs = list.indices.filter { g == "Todos" || list[it].group == g }
+        sideGroup.text = if (groups.size > 1) "◀  $g  ▶   ·  ${idxs.size}" else "Canais  ·  ${idxs.size}"
+        sideList.removeAllViews()
+        val curPos = idxs.indexOf(chIndex)
+        val from = if (idxs.size > 300) ((if (curPos >= 0) curPos else 0) - 100).coerceAtLeast(0) else 0
+        var focusRow: View? = null
+        for (i in idxs.subList(from, (from + 300).coerceAtMost(idxs.size))) {
+            val ch = list[i]
+            val isCurrent = i == chIndex
+            val num = TextView(this).apply {
+                text = LiveQueue.numberOf(i); setTextColor(0xFFFF7A00.toInt()); setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
+                typeface = Typeface.DEFAULT_BOLD; minWidth = dp(46)
+            }
+            val logo = ImageView(this).apply {
+                scaleType = ImageView.ScaleType.FIT_CENTER
+                setPadding(dp(4), dp(3), dp(4), dp(3))
+                background = GradientDrawable().apply { cornerRadius = dp(6).toFloat(); setColor(0xFF1E1E1E.toInt()) }
+            }
+            ch.logo?.let { url -> imageLoader.enqueue(ImageRequest.Builder(this).data(url).target(logo).build()) }
+            val name = TextView(this).apply {
+                text = ch.name; setTextColor(Color.WHITE); setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f); typeface = Typeface.DEFAULT_BOLD
+                maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END
+            }
+            val now = TextView(this).apply {
+                text = when { isCurrent -> "▶ ASSISTINDO" + (ch.now?.let { "  ·  $it" } ?: ""); else -> ch.now ?: "" }
+                setTextColor(if (isCurrent) 0xFFFF7A00.toInt() else 0xFFBBBBBB.toInt()); setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+                maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END
+                visibility = if (text.isNullOrEmpty()) View.GONE else View.VISIBLE
+            }
+            val next = TextView(this).apply {
+                text = ch.next ?: ""; setTextColor(0xFF8A8A8A.toInt()); setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+                maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END
+                visibility = if (ch.next != null) View.VISIBLE else View.GONE
+            }
+            val texts = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; addView(name); addView(now); addView(next) }
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(10), dp(8), dp(10), dp(8))
+                isFocusable = true
+                isClickable = true
+                background = StateListDrawable().apply {
+                    val on = GradientDrawable().apply { cornerRadius = dp(10).toFloat(); setColor(0x33FFFFFF); setStroke(dp(2), 0xFFFF7A00.toInt()) }
+                    val off = GradientDrawable().apply { cornerRadius = dp(10).toFloat(); setColor(if (isCurrent) 0x26FF7A00 else Color.TRANSPARENT) }
+                    addState(intArrayOf(android.R.attr.state_focused), on)
+                    addState(intArrayOf(android.R.attr.state_pressed), on)
+                    addState(intArrayOf(), off)
+                }
+                addView(num)
+                addView(logo, LinearLayout.LayoutParams(dp(72), dp(40)).apply { marginEnd = dp(12) })
+                addView(texts, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                setOnClickListener { closeSide(); tuneTo(i) }
+                setOnFocusChangeListener { _, has -> if (has) showInfo(i, sticky = true) }
+            }
+            sideList.addView(row, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(4) })
+            if (isCurrent || focusRow == null) focusRow = if (isCurrent) row else focusRow ?: row
+        }
+        focusRow?.let { r -> r.post { r.requestFocus() } }
+    }
+
+    /** Teclas da TV ao vivo. Retorna true quando a tecla foi usada. */
+    private fun liveKey(event: KeyEvent): Boolean {
+        val code = event.keyCode
+        val down = event.action == KeyEvent.ACTION_DOWN
+        val first = down && event.repeatCount == 0
+        if (sideOpen) {
+            when (code) {
+                KeyEvent.KEYCODE_BACK -> { if (first) closeSide(); return true }
+                KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                    if (first && groups.size > 1) {
+                        groupIdx = (groupIdx + (if (code == KeyEvent.KEYCODE_DPAD_RIGHT) 1 else -1) + groups.size) % groups.size
+                        renderSide()
+                    }
+                    return true
+                }
+            }
+            return false        // ↑/↓/OK seguem para a lista
+        }
+        if (view.isControllerFullyVisible) return false
+        when (code) {
+            KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_CHANNEL_UP -> { if (down) zap(+1); return true }
+            KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_CHANNEL_DOWN -> { if (down) zap(-1); return true }
+            KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER -> {
+                if (first) { if (LiveQueue.entries.size > 1) openSide() else showInfo() }
+                return true
+            }
+            KeyEvent.KEYCODE_INFO, KeyEvent.KEYCODE_GUIDE -> { if (first) { if (code == KeyEvent.KEYCODE_GUIDE) openSide() else showInfo() }; return true }
+            KeyEvent.KEYCODE_MENU -> { if (first) view.showController(); return true }
+            KeyEvent.KEYCODE_LAST_CHANNEL -> { if (first && lastChIndex >= 0) tuneTo(lastChIndex); return true }
+            KeyEvent.KEYCODE_BACK -> {
+                // Voltar: alterna com o canal anterior; apertando de novo em seguida, sai
+                if (!first) return true
+                val now = System.currentTimeMillis()
+                if (lastChIndex >= 0 && now - lastBackAt > 2500) {
+                    lastBackAt = now
+                    tuneTo(lastChIndex)
+                    Toast.makeText(this, "Canal anterior · aperte Voltar de novo para sair", Toast.LENGTH_SHORT).show()
+                    return true
+                }
+                return false
+            }
+        }
+        val digit = when (code) {
+            in KeyEvent.KEYCODE_0..KeyEvent.KEYCODE_9 -> code - KeyEvent.KEYCODE_0
+            in KeyEvent.KEYCODE_NUMPAD_0..KeyEvent.KEYCODE_NUMPAD_9 -> code - KeyEvent.KEYCODE_NUMPAD_0
+            else -> -1
+        }
+        if (digit >= 0) { if (first) typeDigit(digit); return true }
+        return false
     }
 
     /** Cartões dos episódios da temporada atual (o atual fica marcado). */
@@ -1026,7 +1350,9 @@ class PlayerActivity : ComponentActivity() {
             }
             return super.dispatchKeyEvent(event)
         }
-        // Controles abertos e ↓ sem mais nada abaixo: abre a lista de episódios
+        // TV ao vivo com cara de TV a cabo (zapping, números, último canal, lista lateral)
+        if (isLive && liveKey(event)) return true
+        // Controles abertos e ↓ sem mais nada abaixo: abre a lista de episódios (ou de canais)
         if (code == KeyEvent.KEYCODE_DPAD_DOWN && view.isControllerFullyVisible && episodesRow.childCount > 0) {
             val focus = currentFocus
             val below = focus?.let { FocusFinder.getInstance().findNextFocus(window.decorView as ViewGroup, it, View.FOCUS_DOWN) }
@@ -1103,6 +1429,9 @@ class PlayerActivity : ComponentActivity() {
         handler.removeCallbacks(liveWatchdog)
         handler.removeCallbacks(seekCommit)
         handler.removeCallbacks(hideOsd)
+        handler.removeCallbacks(hideInfo)
+        handler.removeCallbacks(tuneTask)
+        handler.removeCallbacks(numberTask)
         if (started && !isLive) report { id, ticks, _ -> jf.reportStopped(id, ticks, method, playSession) }
         liveStreamId?.let { live -> App.scope.launch { runCatching { jf.closeLiveStream(live) } } }
         p.removeListener(listener)

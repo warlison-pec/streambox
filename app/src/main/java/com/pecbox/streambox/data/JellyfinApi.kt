@@ -135,6 +135,24 @@ class JellyfinApi(private val s: Session) {
         mapOf("userId" to s.userId, "limit" to limit, "fields" to FIELDS, "enableTotalRecordCount" to false)
     ).items
 
+    /** "Minha lista": filmes e séries marcados como favoritos no Jellyfin. */
+    suspend fun favorites(limit: Int = 40): List<Item> = items(
+        "/Items",
+        mapOf(
+            "userId" to s.userId, "recursive" to true, "filters" to "IsFavorite",
+            "includeItemTypes" to "Movie,Series", "sortBy" to "SortName", "sortOrder" to "Ascending",
+            "limit" to limit, "fields" to FIELDS, "enableTotalRecordCount" to false,
+        )
+    ).items
+
+    /** Adiciona ou tira da "Minha lista" (favoritos do Jellyfin; vale também no web e em outros apps). */
+    suspend fun setFavorite(itemId: String, favorite: Boolean) {
+        val req = Request.Builder()
+            .url(url("/UserFavoriteItems/$itemId", mapOf("userId" to s.userId)))
+            .header("Authorization", authHeader())
+        s.http.fetch(if (favorite) req.post("".toRequestBody(JSON_TYPE)).build() else req.delete().build())
+    }
+
     /** Destaques aleatórios com imagem de fundo (para o carrossel). */
     suspend fun featured(type: String, limit: Int): List<Item> = items(
         "/Items",
