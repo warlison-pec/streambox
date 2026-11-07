@@ -84,6 +84,7 @@ import com.pecbox.streambox.data.libraryItemTypes
 import com.pecbox.streambox.play
 import com.pecbox.streambox.ui.Nav
 import com.pecbox.streambox.ui.Route
+import com.pecbox.streambox.ui.PlaybackEvents
 import com.pecbox.streambox.ui.Watched
 import com.pecbox.streambox.ui.components.ErrorBox
 import com.pecbox.streambox.ui.components.Loading
@@ -130,12 +131,27 @@ fun HomeScreen(nav: Nav) {
             HomeData(featured, resume.await(), next.await(), favs.await(), latest.map { (n, d) -> n to d.await() })
         }
     }
+    // Player fechou: recarrega (o episódio terminado sai de "Próximos episódios" e de "Continuar")
+    val closed = PlaybackEvents.version
+    var seenClose by remember { mutableIntStateOf(closed) }
+    LaunchedEffect(closed) {
+        if (closed == seenClose) return@LaunchedEffect
+        seenClose = closed
+        home.reload()
+        delay(2500)          // o Jellyfin às vezes demora a atualizar o "Próximos": confere de novo
+        home.reload()
+    }
     // "Ocultar assistidos" (Ajustes): o que for marcado como visto agora some na hora, sem recarregar
     val hide = App.session.hideWatched
     fun List<Item>.unseen() = if (hide) filterNot { Watched.isPlayed(it) } else this
     val raw = home.data
     val homeData = raw?.let { d ->
-        d.copy(featured = d.featured.unseen(), favorites = d.favorites.unseen(), latest = d.latest.map { (n, l) -> n to l.unseen() })
+        d.copy(
+            featured = d.featured.unseen(), favorites = d.favorites.unseen(), latest = d.latest.map { (n, l) -> n to l.unseen() },
+            // Episódio já assistido nunca fica em "Continuar" nem em "Próximos episódios"
+            resume = d.resume.filterNot { Watched.isPlayed(it) },
+            nextUp = d.nextUp.filterNot { Watched.isPlayed(it) },
+        )
     }
     val data = homeData
     when {

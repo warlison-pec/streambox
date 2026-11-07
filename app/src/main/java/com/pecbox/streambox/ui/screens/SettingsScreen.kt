@@ -44,6 +44,9 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shadow
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
@@ -205,11 +208,25 @@ private fun SubtitlePreview(size: Int, color: Int, bg: Int) {
             .background(Brush.linearGradient(listOf(Color(0xFF3A4A5A), Color(0xFF1B2430), Color(0xFF5A4636)))),
         contentAlignment = Alignment.BottomCenter
     ) {
-        Text(
-            "Exemplo de legenda no vídeo",
-            modifier = Modifier.padding(bottom = 14.dp).background(box).padding(horizontal = 6.dp, vertical = 2.dp),
-            style = TextStyle(color = fg, fontSize = (18 * scale).sp, fontWeight = FontWeight.Bold, shadow = shadow),
-        )
+        val fontSize = (18 * scale).sp
+        Box(Modifier.padding(bottom = 14.dp).background(box).padding(horizontal = 6.dp, vertical = 2.dp)) {
+            if (bg == 0) {
+                // Contorno grosso, igual ao do player (cerca de 15% do tamanho da letra)
+                val strokePx = with(LocalDensity.current) { fontSize.toPx() } * 0.15f
+                Text(
+                    "Exemplo de legenda no vídeo",
+                    style = TextStyle(
+                        color = Color.Black, fontSize = fontSize, fontWeight = FontWeight.Bold,
+                        shadow = Shadow(Color.Black.copy(alpha = 0.8f), Offset(0f, strokePx * 0.3f), strokePx * 0.7f),
+                        drawStyle = Stroke(width = strokePx, join = StrokeJoin.Round),
+                    ),
+                )
+            }
+            Text(
+                "Exemplo de legenda no vídeo",
+                style = TextStyle(color = fg, fontSize = fontSize, fontWeight = FontWeight.Bold, shadow = if (bg == 0) null else shadow),
+            )
+        }
     }
 }
 

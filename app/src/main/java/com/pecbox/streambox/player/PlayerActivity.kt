@@ -36,6 +36,7 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.Tracks
+import androidx.media3.common.text.CueGroup
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
@@ -60,7 +61,10 @@ import android.view.FocusFinder
 import android.widget.HorizontalScrollView
 import coil.imageLoader
 import coil.request.ImageRequest
+import com.pecbox.streambox.ui.PlaybackEvents
 import com.pecbox.streambox.ui.Watched
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
 import java.util.UUID
 
@@ -165,6 +169,8 @@ class PlayerActivity : ComponentActivity() {
     private lateinit var episodesTitle: TextView
     private lateinit var episodesRow: LinearLayout
     private lateinit var seekOsd: TextView
+    private lateinit var outlineSubs: OutlineSubtitles
+    private var endedNaturally = false     // chegou ao fim do vídeo (para marcar como assistido)
     private var seekTarget = -1L           // posição acumulada enquanto o usuário aperta ←/→
     private lateinit var http: DefaultHttpDataSource.Factory
 
@@ -192,7 +198,11 @@ class PlayerActivity : ComponentActivity() {
     private val tuneTask = Runnable { if (pendingIndex >= 0) tuneTo(pendingIndex) }
     private val numberTask = Runnable { tuneNumber() }
     private val seekCommit = Runnable { seekTarget = -1L }
-    private val hideOsd = Runnable { if (::seekOsd.isInitialized) seekOsd.visibility = View.GONE }
+    private val hideOsd = Runnable {
+        if (!::seekOsd.isInitialized) return@Runnable
+        // Pausado: o aviso volta a mostrar "Pausado" em vez de sumir
+        if (!isLive && player?.playWhenReady == false) showPauseOsd(true) else seekOsd.visibility = View.GONE
+    }
 
     private val segmentTask = object : Runnable {
         override fun run() {
@@ -228,6 +238,8 @@ class PlayerActivity : ComponentActivity() {
             setShowNextButton(false)
             setShowPreviousButton(false)
             controllerShowTimeoutMs = 5000
+            // Pausar não abre a barra sozinho: assim OK pausa com um clique e ←/→ continuam avançando/recuando
+            controllerAutoShow = false
             setShowSubtitleButton(false) // usamos o nosso botão de legendas
         }
         applySubtitleStyle()
@@ -417,6 +429,7 @@ class PlayerActivity : ComponentActivity() {
                     }
                 }
                 Player.STATE_ENDED -> if (!isLive) {
+                    endedNaturally = true
                     if (next != null && !nextDismissed) playNext() else finish()
                 } else {
                     reconnect("A transmissão foi interrompida")   // fonte fechou a conexão: abre de novo
@@ -426,12 +439,20 @@ class PlayerActivity : ComponentActivity() {
         }
 
         override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+            if (!isLive && started && !isFinishing) {
+                if (view.isControllerFullyVisible) { if (playWhenReady) handler.post(hideOsd) }
+                else showPauseOsd(!playWhenReady)
+            }
             // Só conta como pausa do usuário o que veio do controle/botões (ou fone desconectado / ligação)
             userPaused = !playWhenReady && reason in setOf(
                 Player.PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST,
                 Player.PLAY_WHEN_READY_CHANGE_REASON_AUDIO_FOCUS_LOSS,
                 Player.PLAY_WHEN_READY_CHANGE_REASON_AUDIO_BECOMING_NOISY,
             )
+        }
+
+        override fun onCues(cueGroup: CueGroup) {
+            if (::outlineSubs.isInitialized) outlineSubs.setCues(cueGroup.cues)
         }
 
         override fun onIsPlayingChanged(isPlaying: Boolean) {
@@ -523,6 +544,11 @@ class PlayerActivity : ComponentActivity() {
         view.setControllerVisibilityListener(PlayerView.ControllerVisibilityListener { v ->
             if (basic == null) optionsBar.visibility = v
             top.visibility = if (tvBox) View.GONE else v
+            // Barra aberta: esconde o aviso "Pausado"; fechou pausado: mostra de novo
+            if (!isLive && ::seekOsd.isInitialized) {
+                if (v == View.VISIBLE) { handler.removeCallbacks(hideOsd); seekOsd.visibility = View.GONE }
+                else if (player?.playWhenReady == false) showPauseOsd(true)
+            }
         })
     }
 
@@ -567,9 +593,29 @@ class PlayerActivity : ComponentActivity() {
         }
         sv.setApplyEmbeddedStyles(false)
         sv.setApplyEmbeddedFontSizes(false)
-        sv.setStyle(CaptionStyleCompat(color, bg, Color.TRANSPARENT, edge, Color.BLACK, Typeface.DEFAULT_BOLD))
-        sv.setFractionalTextSize(SubtitleView.DEFAULT_TEXT_SIZE_FRACTION * 1.15f * size)
+        val fraction = SubtitleView.DEFAULT_TEXT_SIZE_FRACTION * 1.15f * size
+        sv.setFractionalTextSize(fraction)
         sv.setBottomPaddingFraction(0.08f)
+        val outline = session.subBackground !in 1..3
+        if (outline) {
+            // Contorno: o texto é desenhado pela nossa camada (contorno grosso). O SubtitleView
+            // fica com texto invisível e só mostra legendas em imagem (PGS/VobSub).
+            sv.setStyle(CaptionStyleCompat(Color.TRANSPARENT, Color.TRANSPARENT, Color.TRANSPARENT, CaptionStyleCompat.EDGE_TYPE_NONE, Color.TRANSPARENT, Typeface.DEFAULT_BOLD))
+            if (!::outlineSubs.isInitialized) {
+                outlineSubs = OutlineSubtitles(this)
+                (sv.parent as? ViewGroup)?.let { parent ->
+                    parent.addView(outlineSubs, parent.indexOfChild(sv) + 1, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+                }
+                player?.let { outlineSubs.setCues(it.currentCues.cues) }
+            }
+            outlineSubs.textColor = color
+            outlineSubs.sizeFraction = fraction
+            outlineSubs.bottomPaddingFraction = 0.08f
+            outlineSubs.visibility = View.VISIBLE
+        } else {
+            sv.setStyle(CaptionStyleCompat(color, bg, Color.TRANSPARENT, edge, Color.BLACK, Typeface.DEFAULT_BOLD))
+            if (::outlineSubs.isInitialized) outlineSubs.visibility = View.GONE
+        }
     }
 
     private fun showAppearance() {
@@ -1247,6 +1293,23 @@ class PlayerActivity : ComponentActivity() {
         handler.removeCallbacks(seekCommit); handler.postDelayed(seekCommit, 900)
     }
 
+    /** Aviso de pausa (fica na tela enquanto estiver pausado) ou de "continuar" (some sozinho). */
+    private fun showPauseOsd(paused: Boolean) {
+        val p = player ?: return
+        if (!::seekOsd.isInitialized || isLive) return
+        handler.removeCallbacks(hideOsd)
+        val dur = p.duration.takeIf { it > 0 }
+        seekOsd.text = (if (paused) "⏸  Pausado   " else "▶  ") + fmtTime(p.currentPosition) +
+            (dur?.let { "  /  " + fmtTime(it) } ?: "")
+        seekOsd.visibility = View.VISIBLE
+        if (!paused) handler.postDelayed(hideOsd, 1200)
+    }
+
+    private fun togglePause() {
+        val p = player ?: return
+        p.playWhenReady = !p.playWhenReady
+    }
+
     private fun fmtTime(ms: Long): String {
         val t = ms / 1000
         return if (t >= 3600) "%d:%02d:%02d".format(t / 3600, t / 60 % 60, t % 60) else "%d:%02d".format(t / 60, t % 60)
@@ -1407,6 +1470,12 @@ class PlayerActivity : ComponentActivity() {
                 return true
             }
         }
+        // OK com os controles escondidos: pausa/continua com um clique só (↑/↓ abrem os controles)
+        if (!isLive && !view.isControllerFullyVisible && code in listOf(
+                KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER, KeyEvent.KEYCODE_BUTTON_A)) {
+            if (down && event.repeatCount == 0) togglePause()
+            return true
+        }
         // ←/→ com os controles escondidos: avança/recua o vídeo (filmes e episódios)
         if (!isLive && !view.isControllerFullyVisible && (code == KeyEvent.KEYCODE_DPAD_LEFT || code == KeyEvent.KEYCODE_DPAD_RIGHT)) {
             if (down) seekBy(forward = code == KeyEvent.KEYCODE_DPAD_RIGHT, held = event.repeatCount > 2)
@@ -1429,9 +1498,11 @@ class PlayerActivity : ComponentActivity() {
             KeyEvent.KEYCODE_MENU, KeyEvent.KEYCODE_SETTINGS -> { showMenu(); return true }
             KeyEvent.KEYCODE_CAPTIONS -> { showSubtitles(); return true }
             KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, KeyEvent.KEYCODE_SPACE -> {
-                player?.let { it.playWhenReady = !it.playWhenReady }
+                togglePause()
                 return true
             }
+            KeyEvent.KEYCODE_MEDIA_PLAY -> { player?.playWhenReady = true; return true }
+            KeyEvent.KEYCODE_MEDIA_PAUSE -> { player?.playWhenReady = false; return true }
         }
         if (!view.isControllerFullyVisible && keyCode in listOf(KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN)) {
             view.showController()
@@ -1466,7 +1537,25 @@ class PlayerActivity : ComponentActivity() {
         handler.removeCallbacks(hideInfo)
         handler.removeCallbacks(tuneTask)
         handler.removeCallbacks(numberTask)
-        if (started && !isLive) report { id, ticks, _ -> jf.reportStopped(id, ticks, method, playSession) }
+        if (started && !isLive) {
+            val id = itemId
+            val posMs = p.currentPosition
+            val durMs = p.duration.takeIf { it > 0 } ?: ((current?.runTimeTicks ?: 0L) / TICKS_PER_MS)
+            val outro = segments.firstOrNull { it.type == "Outro" }
+            // Terminou de verdade: chegou ao fim, entrou nos créditos ou passou de 90%
+            val finished = endedNaturally || (durMs > 0 && posMs >= durMs * 0.9) ||
+                (outro != null && posMs * TICKS_PER_MS >= outro.startTicks)
+            if (finished && id != null) Watched.markLocal(id)
+            val ticks = posMs * TICKS_PER_MS
+            App.scope.launch {
+                if (id != null) {
+                    runCatching { jf.reportStopped(id, ticks, method, playSession) }
+                    // O Jellyfin nem sempre marca como visto pelo "parou no fim"; marcamos nós mesmos
+                    if (finished) runCatching { jf.setPlayed(id, true) }
+                }
+                withContext(Dispatchers.Main) { PlaybackEvents.playerClosed() }
+            }
+        }
         liveStreamId?.let { live -> App.scope.launch { runCatching { jf.closeLiveStream(live) } } }
         p.removeListener(listener)
         p.release()
