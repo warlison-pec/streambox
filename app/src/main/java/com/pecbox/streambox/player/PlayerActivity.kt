@@ -188,10 +188,11 @@ class PlayerActivity : ComponentActivity() {
     private lateinit var episodesPanel: LinearLayout
     private lateinit var episodesTitle: TextView
     private lateinit var episodesRow: LinearLayout
-    private lateinit var seekOsd: TextView
+    private lateinit var seekOsd: PlayerOsd
     private lateinit var outlineSubs: OutlineSubtitles
     private var endedNaturally = false     // chegou ao fim do vídeo (para marcar como assistido)
     private var seekTarget = -1L           // posição acumulada enquanto o usuário aperta ←/→
+    private var seekOrigin = 0L            // onde estava ao começar a apertar (para mostrar +30 s)
     private lateinit var http: DefaultHttpDataSource.Factory
 
     // TV ao vivo com cara de TV a cabo
@@ -226,7 +227,7 @@ class PlayerActivity : ComponentActivity() {
     private val hideOsd = Runnable {
         if (!::seekOsd.isInitialized) return@Runnable
         // Pausado: o aviso volta a mostrar "Pausado" em vez de sumir
-        if (!isLive && player?.playWhenReady == false) showPauseOsd(true) else seekOsd.visibility = View.GONE
+        if (!isLive && player?.playWhenReady == false) showPauseOsd(true) else seekOsd.hide()
     }
 
     private val segmentTask = object : Runnable {
@@ -577,6 +578,8 @@ class PlayerActivity : ComponentActivity() {
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.START,
             ).apply { setMargins(dp(14), dp(14), 0, 0) })
         }
+        // Telas de toque são estreitas: o aviso de avançar/pausar desce para não encostar no logo
+        if (!tvBox) (seekOsd.layoutParams as FrameLayout.LayoutParams).topMargin = dp(76)
         // Logo de filmes e séries: nas telas de toque fica ao lado do botão voltar
         logoView = ImageView(this).apply {
             scaleType = ImageView.ScaleType.FIT_START
@@ -593,7 +596,7 @@ class PlayerActivity : ComponentActivity() {
             top.visibility = if (tvBox) View.GONE else v
             // Barra aberta: esconde o aviso "Pausado"; fechou pausado: mostra de novo
             if (!isLive && ::seekOsd.isInitialized) {
-                if (v == View.VISIBLE) { handler.removeCallbacks(hideOsd); seekOsd.visibility = View.GONE }
+                if (v == View.VISIBLE) { handler.removeCallbacks(hideOsd); seekOsd.hide() }
                 else if (player?.playWhenReady == false) showPauseOsd(true)
             }
         })
@@ -1091,12 +1094,7 @@ class PlayerActivity : ComponentActivity() {
             .apply { bottomMargin = dp(110); marginEnd = dp(32) })
 
         // Aviso de avanço/recuo pelas setas (sem abrir os controles)
-        seekOsd = TextView(this).apply {
-            visibility = View.GONE
-            setTextColor(Color.WHITE); setTextSize(TypedValue.COMPLEX_UNIT_SP, 20f); typeface = Typeface.DEFAULT_BOLD
-            setPadding(dp(22), dp(10), dp(22), dp(10))
-            background = GradientDrawable().apply { cornerRadius = dp(24).toFloat(); setColor(0xCC000000.toInt()) }
-        }
+        seekOsd = PlayerOsd(this)
         root.addView(seekOsd, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.CENTER_HORIZONTAL)
             .apply { topMargin = dp(40) })
 
@@ -1292,8 +1290,7 @@ class PlayerActivity : ComponentActivity() {
     /** Teclas numéricas: junta os dígitos e sintoniza o canal com esse número. */
     private fun typeDigit(d: Int) {
         numberBuf = (numberBuf + d).takeLast(4)
-        seekOsd.text = "Canal  ${numberBuf}–"
-        seekOsd.visibility = View.VISIBLE
+        seekOsd.showChannel(numberBuf)
         handler.removeCallbacks(hideOsd)
         handler.removeCallbacks(numberTask)
         handler.postDelayed(numberTask, 1500)
@@ -1302,7 +1299,7 @@ class PlayerActivity : ComponentActivity() {
     private fun tuneNumber() {
         val typed = numberBuf.trimStart('0').ifBlank { "0" }
         numberBuf = ""
-        seekOsd.visibility = View.GONE
+        seekOsd.hide()
         val list = LiveQueue.entries
         var idx = list.indexOfFirst { it.number?.trimStart('0') == typed }
         if (idx < 0) idx = (typed.toIntOrNull() ?: 0) - 1          // sem números na lista: posição
@@ -1528,11 +1525,11 @@ class PlayerActivity : ComponentActivity() {
         val p = player ?: return
         val dur = p.duration.takeIf { it > 0 } ?: Long.MAX_VALUE
         val step = if (held) 30_000L else 10_000L
-        val base = if (seekTarget >= 0) seekTarget else p.currentPosition
+        if (seekTarget < 0) seekOrigin = p.currentPosition
+        val base = if (seekTarget >= 0) seekTarget else seekOrigin
         seekTarget = (base + if (forward) step else -step).coerceIn(0L, (dur - 1_000L).coerceAtLeast(0L))
         p.seekTo(seekTarget)
-        seekOsd.text = (if (forward) "⏩  " else "⏪  ") + fmtTime(seekTarget) + (if (dur != Long.MAX_VALUE) "  /  " + fmtTime(dur) else "")
-        seekOsd.visibility = View.VISIBLE
+        seekOsd.showSeek(forward, seekTarget, dur.takeIf { it != Long.MAX_VALUE }, seekTarget - seekOrigin)
         peekLogo(1500)
         handler.removeCallbacks(hideOsd); handler.postDelayed(hideOsd, 1500)
         handler.removeCallbacks(seekCommit); handler.postDelayed(seekCommit, 900)
@@ -1544,9 +1541,7 @@ class PlayerActivity : ComponentActivity() {
         if (!::seekOsd.isInitialized || isLive) return
         handler.removeCallbacks(hideOsd)
         val dur = p.duration.takeIf { it > 0 }
-        seekOsd.text = (if (paused) "⏸  Pausado   " else "▶  ") + fmtTime(p.currentPosition) +
-            (dur?.let { "  /  " + fmtTime(it) } ?: "")
-        seekOsd.visibility = View.VISIBLE
+        seekOsd.showPause(paused, p.currentPosition, dur)
         if (!paused) handler.postDelayed(hideOsd, 1200)
     }
 
