@@ -279,13 +279,10 @@ class JellyfinApi(private val s: Session) {
     /* ---------------- reprodução ---------------- */
 
     /** Arquivo original via servidor (sem conversão). Funciona também para itens .strm. */
-    fun directStreamUrl(itemId: String, mediaSourceId: String = itemId, liveStreamId: String? = null): String =
+    fun directStreamUrl(itemId: String): String =
         url(
             "/Videos/$itemId/stream",
-            mapOf(
-                "static" to true, "mediaSourceId" to mediaSourceId, "liveStreamId" to liveStreamId,
-                "deviceId" to s.deviceId, "ApiKey" to s.token
-            )
+            mapOf("static" to true, "mediaSourceId" to itemId, "deviceId" to s.deviceId, "ApiKey" to s.token)
         ).toString()
 
     /** Conversão HLS no servidor (H.264/AAC) quando o aparelho não consegue tocar o original. */
@@ -296,14 +293,12 @@ class JellyfinApi(private val s: Session) {
         maxHeight: Int? = null,
         audioIndex: Int? = null,
         maxAudioChannels: Int = 2,
-        mediaSourceId: String = itemId,
-        liveStreamId: String? = null,
     ): String {
         val audioBitrate = if (maxAudioChannels > 2) 384_000 else 192_000
         return url(
             "/Videos/$itemId/master.m3u8",
             mapOf(
-                "mediaSourceId" to mediaSourceId, "liveStreamId" to liveStreamId, "deviceId" to s.deviceId, "ApiKey" to s.token,
+                "mediaSourceId" to itemId, "deviceId" to s.deviceId, "ApiKey" to s.token,
                 "playSessionId" to playSessionId, "videoCodec" to "h264", "audioCodec" to "aac,mp3",
                 "maxStreamingBitrate" to maxBitrate, "videoBitRate" to (maxBitrate - audioBitrate).coerceAtLeast(300_000),
                 "audioBitRate" to audioBitrate, "maxHeight" to maxHeight, "audioStreamIndex" to audioIndex,
@@ -318,7 +313,7 @@ class JellyfinApi(private val s: Session) {
             {"UserId":"${s.userId}","MaxStreamingBitrate":40000000,"AutoOpenLiveStream":$live,
              "EnableDirectPlay":true,"EnableDirectStream":true,"EnableTranscoding":true,
              "DeviceProfile":{"MaxStreamingBitrate":40000000,
-               "DirectPlayProfiles":[{"Type":"Video","Container":"mp4,m4v,mkv,webm,ts,mpegts,mov","VideoCodec":"h264,hevc,vp9,av1,mpeg2video","AudioCodec":"aac,mp3,mp2,ac3,eac3,opus,flac,vorbis"}],
+               "DirectPlayProfiles":[{"Type":"Video","Container":"mp4,m4v,mkv,webm,ts,mpegts,mov","VideoCodec":"h264,hevc,vp9,av1,mpeg2video","AudioCodec":"aac,mp3,ac3,eac3,opus,flac,vorbis"}],
                "TranscodingProfiles":[{"Type":"Video","Container":"ts","Protocol":"hls","VideoCodec":"h264","AudioCodec":"aac,mp3","Context":"Streaming","MaxAudioChannels":"2","BreakOnNonKeyFrames":true}],
                "SubtitleProfiles":[{"Format":"vtt","Method":"External"},{"Format":"srt","Method":"External"},{"Format":"ass","Method":"External"},{"Format":"ssa","Method":"External"}]}}
         """.trimIndent()

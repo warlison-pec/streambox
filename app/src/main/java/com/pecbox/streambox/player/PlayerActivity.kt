@@ -396,14 +396,11 @@ class PlayerActivity : ComponentActivity() {
                 source = src
                 liveStreamId = src.liveStreamId
                 val transcode = src.transcodingUrl
-                val remote = src.path?.takeIf { src.isRemote && it.startsWith("http") }
-                // Fonte direta primeiro: a conversão só quando o servidor diz que o direto não serve
-                if (transcode != null && !src.supportsDirectPlay && !src.supportsDirectStream) {
-                    method = "Transcode"
-                    load(jf.absolute(transcode), 0, hls = true)
-                } else {
-                    method = "DirectStream"
-                    load(remote ?: jf.directStreamUrl(id, src.id, src.liveStreamId), 0, hls = remote?.contains(".m3u8") == true)
+                val path = src.path
+                when {
+                    transcode != null -> { method = "Transcode"; load(jf.absolute(transcode), 0, hls = true) }
+                    src.isRemote && path != null && path.startsWith("http") -> load(path, 0, hls = path.contains(".m3u8"))
+                    else -> load(jf.directStreamUrl(id), 0, hls = false)
                 }
             } catch (e: Exception) {
                 Toast.makeText(this@PlayerActivity, "Canal indisponível: ${e.friendly()}", Toast.LENGTH_LONG).show()
@@ -488,19 +485,12 @@ class PlayerActivity : ComponentActivity() {
     private fun fallbackToConversion(): Boolean {
         val p = player ?: return false
         val id = itemId ?: return false
-        if (triedHls || currentIsHls || externalUrl != null) return false
+        if (triedHls || currentIsHls || isLive) return false
         triedHls = true
         method = "Transcode"
-        val pos = if (jfLive) 0L else p.currentPosition.coerceAtLeast(intent.getLongExtra(EXTRA_START_TICKS, 0L) / TICKS_PER_MS)
+        val pos = p.currentPosition.coerceAtLeast(intent.getLongExtra(EXTRA_START_TICKS, 0L) / TICKS_PER_MS)
         Toast.makeText(this, "Convertendo no servidor…", Toast.LENGTH_SHORT).show()
         p.stop()
-        val live = source.takeIf { jfLive }
-        if (live != null) {
-            val url = live.transcodingUrl?.let { jf.absolute(it) }
-                ?: jf.hlsUrl(id, playSession, originalBitrate(), mediaSourceId = live.id, liveStreamId = live.liveStreamId)
-            load(url, pos, hls = true)
-            return true
-        }
         lifecycleScope.launch {
             // o erro pode chegar antes das informações do arquivo, e o alvo da conversão depende delas
             if (source == null) source = runCatching { jf.playbackInfo(id).sources.firstOrNull() }.getOrNull()
@@ -580,12 +570,8 @@ class PlayerActivity : ComponentActivity() {
                 p.prepare()
                 return
             }
-            val formatError = isFormatError(error.errorCode)
-            if (isLive) {
-                if (!(formatError && fallbackToConversion())) reconnect(error.errorCodeName)
-                return
-            }
-            if (!formatError && networkRetries < MAX_NETWORK_RETRIES) {
+            if (isLive) { reconnect(error.errorCodeName); return }
+            if (!isFormatError(error.errorCode) && networkRetries < MAX_NETWORK_RETRIES) {
                 // Falha de rede: insiste na mesma fonte (1 s, 2 s, 4 s) antes de pedir conversão
                 val delayMs = 1000L shl networkRetries
                 networkRetries++
@@ -1346,7 +1332,6 @@ class PlayerActivity : ComponentActivity() {
         liveStreamId = null
         handler.removeCallbacks(stallTask)
         reconnects = 0; reconnectPending = false; userPaused = false; frozenMs = 0
-        triedHls = false; method = "DirectStream"
         title = ch.name
         p.stop()
         applyHeaders(ch.userAgent, ch.referer)
