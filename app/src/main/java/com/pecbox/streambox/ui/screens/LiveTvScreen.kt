@@ -1,9 +1,12 @@
+@file:OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+
 package com.pecbox.streambox.ui.screens
 
 import androidx.compose.material.icons.filled.PlayArrow
 import com.pecbox.streambox.player.LiveQueue
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -104,7 +107,7 @@ fun LiveTvScreen(nav: Nav) {
     Column(Modifier.fillMaxSize()) {
         Column(Modifier.padding(horizontal = pad, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text("TV ao vivo", style = MaterialTheme.typography.headlineMedium)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Chip("Jellyfin", selected = tab == 0, onClick = { tabChoice = 0; group = ""; genre = "" })
                 Chip("Minha lista", selected = tab == 1, onClick = { tabChoice = 1; group = ""; genre = "" })
                 // Último canal assistido: abre direto nele (como ligar o decodificador)

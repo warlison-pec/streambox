@@ -1,3 +1,5 @@
+@file:OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+
 package com.pecbox.streambox.ui.screens
 
 import android.content.Context
@@ -14,6 +16,7 @@ import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -165,7 +168,8 @@ private fun DetailsContent(item: Item, nav: Nav, onChanged: () -> Unit) {
 
         item {
             Column(Modifier.padding(horizontal = pad), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                // Vários botões: no celular em pé os que não couberem descem de linha
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     when {
                         isCollection -> Text("${children.size} títulos nesta coleção", color = TextMuted)
                         item.isSeries -> SbButton(

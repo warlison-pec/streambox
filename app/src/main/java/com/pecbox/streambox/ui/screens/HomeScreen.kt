@@ -74,6 +74,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -478,6 +479,8 @@ private fun HeroCarousel(slides: List<Item>, nav: Nav, onChanged: () -> Unit) {
     val ctx = LocalContext.current
     val pager = rememberPagerState(pageCount = { slides.size })
     val scope = rememberCoroutineScope()
+    // Celular em pé: botões compactos e sem setas (dá para deslizar), para tudo caber em uma linha
+    val narrow = LocalConfiguration.current.screenWidthDp < 480
 
     // Troca de slide automática a cada 7 s
     LaunchedEffect(pager.settledPage, slides.size) {
@@ -519,10 +522,11 @@ private fun HeroCarousel(slides: List<Item>, nav: Nav, onChanged: () -> Unit) {
                     if ((item.userData?.positionTicks ?: 0) > 0) "Continuar" else "Assistir",
                     onClick = { ctx.playOrOpen(item, nav) }, icon = Icons.Filled.PlayArrow,
                 )
-                SbButton("Detalhes", onClick = { nav.push(Route.Details(item.id)) }, icon = Icons.Filled.Info, primary = false)
+                if (narrow) RoundIcon(Icons.Filled.Info, "Detalhes") { nav.push(Route.Details(item.id)) }
+                else SbButton("Detalhes", onClick = { nav.push(Route.Details(item.id)) }, icon = Icons.Filled.Info, primary = false)
                 FavoriteButton(item, onChanged, compact = true)
                 WatchedButton(item, onChanged, compact = true)
-                if (slides.size > 1) {
+                if (slides.size > 1 && !narrow) {
                     RoundIcon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, "Anterior") { go(-1) }
                     RoundIcon(Icons.AutoMirrored.Filled.KeyboardArrowRight, "Próximo") { go(1) }
                 }

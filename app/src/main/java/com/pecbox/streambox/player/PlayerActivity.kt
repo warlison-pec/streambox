@@ -219,7 +219,7 @@ class PlayerActivity : ComponentActivity() {
     private lateinit var noticeOsd: TextView
     private val hideNotice = Runnable { if (::noticeOsd.isInitialized) noticeOsd.visibility = View.GONE }
     private val noticeSink: (Notice) -> Unit = { showNotice(it) }
-    private val hideInfo = Runnable { if (::infoBar.isInitialized) infoBar.visibility = View.GONE; updateLogo() }
+    private val hideInfo = Runnable { if (::infoBar.isInitialized) infoBar.visibility = View.GONE }
     private val tuneTask = Runnable { if (pendingIndex >= 0) tuneTo(pendingIndex) }
     private val numberTask = Runnable { tuneNumber() }
     private val seekCommit = Runnable { seekTarget = -1L }
@@ -577,7 +577,7 @@ class PlayerActivity : ComponentActivity() {
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.START,
             ).apply { setMargins(dp(14), dp(14), 0, 0) })
         }
-        // Logo: fica abaixo dos botões redondos nas telas de toque
+        // Logo de filmes e séries: nas telas de toque fica ao lado do botão voltar
         logoView = ImageView(this).apply {
             scaleType = ImageView.ScaleType.FIT_START
             alpha = 0f
@@ -585,7 +585,7 @@ class PlayerActivity : ComponentActivity() {
         }
         (view.parent as? FrameLayout)?.addView(logoView, FrameLayout.LayoutParams(
             dp(if (tvBox) 240 else 140), dp(if (tvBox) 96 else 56), Gravity.TOP or Gravity.START,
-        ).apply { setMargins(dp(if (tvBox) 32 else 14), dp(if (tvBox) 24 else 72), 0, 0) })
+        ).apply { setMargins(dp(if (tvBox) 32 else 72), dp(if (tvBox) 10 else 14), 0, 0) })
         view.setControllerVisibilityListener(PlayerView.ControllerVisibilityListener { v ->
             controlsVisible = v == View.VISIBLE
             updateLogo()
@@ -615,12 +615,11 @@ class PlayerActivity : ComponentActivity() {
         )
     }
 
-    /** Mostra o logo junto com os controles, a faixa do canal ou enquanto estiver pausado. */
+    /** Mostra o logo junto com os controles ou enquanto estiver pausado. */
     private fun updateLogo() {
         if (!::logoView.isInitialized) return
-        val liveInfo = isLive && infoBar.visibility == View.VISIBLE
-        val show = logoView.drawable != null && !sideOpen && !episodesOpen &&
-            (controlsVisible || logoPeek || liveInfo || player?.playWhenReady == false)
+        val show = logoView.drawable != null && !episodesOpen &&
+            (controlsVisible || logoPeek || player?.playWhenReady == false)
         logoView.animate().cancel()
         if (show) {
             logoView.visibility = View.VISIBLE
@@ -1235,7 +1234,6 @@ class PlayerActivity : ComponentActivity() {
         }
         infoNum.text = if (index >= 0) LiveQueue.numberOf(index) else ""
         infoName.text = ch.name
-        if (!sideOpen) setLogo(ch.logo)      // navegar pela lista lateral não troca o logo do canal
         infoLogo.setImageDrawable(null)
         ch.logo?.let { url -> imageLoader.enqueue(ImageRequest.Builder(this).data(url).target(infoLogo).build()) }
         infoLogo.visibility = if (ch.logo != null) View.VISIBLE else View.GONE
@@ -1252,7 +1250,6 @@ class PlayerActivity : ComponentActivity() {
         infoNext.visibility = if (ch.next != null) View.VISIBLE else View.GONE
         infoClock.text = fmtClock(now)
         infoBar.visibility = View.VISIBLE
-        updateLogo()
         handler.removeCallbacks(hideInfo)
         if (!sticky) handler.postDelayed(hideInfo, 4500)
     }
@@ -1330,7 +1327,6 @@ class PlayerActivity : ComponentActivity() {
 
     private fun closeSide() {
         sidePanel.visibility = View.GONE
-        updateLogo()
         handler.postDelayed(hideInfo, 1500)
     }
 
