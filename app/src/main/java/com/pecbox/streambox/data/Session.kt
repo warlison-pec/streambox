@@ -69,6 +69,48 @@ class Session(context: Context) {
         get() = prefs.getInt("sub_bg", 0)
         set(v) = prefs.edit().putInt("sub_bg", v).apply()
 
+    /** Idioma preferido do áudio (código de 3 letras do Jellyfin). */
+    var audioLang: String
+        get() = prefs.getString("audio_lang", "por") ?: "por"
+        set(v) = prefs.edit().putString("audio_lang", v).apply()
+
+    /** Faixa lembrada (kind = "sub" ou "audio"): a escolhida nesta série ou, se ainda não houver, a última do app. */
+    fun trackChoice(kind: String, seriesId: String?): TrackChoice? {
+        val saved = seriesId?.let { prefs.getString("${kind}_choice_$it", null) } ?: prefs.getString("${kind}_choice", null)
+        return saved?.let { runCatching { AppJson.decodeFromString(TrackChoice.serializer(), it) }.getOrNull() }
+    }
+
+    fun saveTrackChoice(kind: String, seriesId: String?, choice: TrackChoice) {
+        val json = AppJson.encodeToString(TrackChoice.serializer(), choice)
+        prefs.edit().apply {
+            seriesId?.let { putString("${kind}_choice_$it", json) }
+            if (!choice.off) putString("${kind}_choice", json)  // "Desligadas" vale só para a própria série
+        }.apply()
+    }
+
+    /** Histórico de avisos (JSON). */
+    var noticesJson: String
+        get() = prefs.getString("notices", "") ?: ""
+        set(v) = prefs.edit().putString("notices", v).apply()
+
+    /** Última versão do app já avisada. */
+    var updateNotified: String
+        get() = prefs.getString("update_notified", "") ?: ""
+        set(v) = prefs.edit().putString("update_notified", v).apply()
+
+    /** Títulos pedidos pelo STRM Indexer neste aparelho (normalizados), para avisar quando chegarem. */
+    val requestedTitles: Set<String> get() = prefs.getStringSet("requested_titles", emptySet()).orEmpty()
+
+    fun addRequestedTitle(normalized: String) =
+        prefs.edit().putStringSet("requested_titles", (requestedTitles + normalized).toList().takeLast(200).toSet()).apply()
+
+    /** Marca até onde o catálogo já foi visto: data do item mais novo e os ids com essa mesma data. */
+    fun contentBaseline(): Pair<String, Set<String>> =
+        prefs.getString("content_base_$userId", "").orEmpty() to prefs.getStringSet("content_seen_$userId", emptySet()).orEmpty()
+
+    fun saveContentBaseline(stamp: String, ids: Set<String>) =
+        prefs.edit().putString("content_base_$userId", stamp).putStringSet("content_seen_$userId", ids).apply()
+
     /** Tela inicial: esconder filmes e séries já assistidos (vem ligado; o usuário pode desligar em Ajustes). */
     var hideWatched: Boolean
         get() = prefs.getBoolean("hide_watched_home", true)

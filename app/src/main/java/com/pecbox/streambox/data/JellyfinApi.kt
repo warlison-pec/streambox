@@ -398,6 +398,32 @@ class JellyfinApi(private val s: Session) {
         postText("/LiveStreams/Close", "{}", mapOf("liveStreamId" to liveStreamId))
     }
 
+    /** Filmes e episódios mais recentes do catálogo, do mais novo para o mais antigo. */
+    suspend fun recentlyAdded(limit: Int = 100): List<Item> = items(
+        "/Items",
+        mapOf(
+            "userId" to s.userId, "recursive" to true, "includeItemTypes" to "Movie,Episode",
+            "sortBy" to "DateCreated", "sortOrder" to "Descending", "limit" to limit, "fields" to "DateCreated,ProviderIds",
+        )
+    ).items
+
+    /** Conexão em tempo real (mensagens do painel, biblioteca alterada). */
+    fun socketRequest(): Request = Request.Builder().url(url("/socket")).header("Authorization", authHeader()).build()
+
+    /** Anuncia o que o app aceita. O painel só oferece "enviar mensagem" a sessões controláveis. */
+    suspend fun reportCapabilities() {
+        val body = """{"PlayableMediaTypes":["Video"],"SupportedCommands":["DisplayMessage"],"SupportsMediaControl":true,"SupportsPersistentIdentifier":true}"""
+        postText("/Sessions/Capabilities/Full", body)
+    }
+
+    /** Logo do próprio item (filme/série) ou, em episódios, o da série. Null se não houver. */
+    fun logoImage(item: Item, maxWidth: Int = 480): String? {
+        val tag = item.imageTags["Logo"]
+        val id = if (tag != null) item.id else item.parentLogoId
+        val logoTag = tag ?: item.parentLogoTag
+        return if (id != null && logoTag != null) "${s.server}/Items/$id/Images/Logo?maxWidth=$maxWidth&quality=90&tag=$logoTag" else null
+    }
+
     fun channelLogo(channel: Item): String? =
         channel.imageTags["Primary"]?.let { "${s.server}/Items/${channel.id}/Images/Primary?fillHeight=120&quality=90&tag=$it" }
 

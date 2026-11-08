@@ -14,6 +14,7 @@ import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.MaterialTheme
+import com.pecbox.streambox.ui.Notices
 import com.pecbox.streambox.ui.components.SbTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -44,6 +45,9 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shadow
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
@@ -59,7 +63,7 @@ import com.pecbox.streambox.ui.theme.Success
 import com.pecbox.streambox.ui.theme.TextMuted
 
 @Composable
-fun SettingsScreen() {
+fun SettingsScreen(onNotices: () -> Unit = {}) {
     val s = App.session
     val tv = LocalIsTv.current
     var indexer by rememberSaveable { mutableStateOf(s.indexerUrl) }
@@ -68,6 +72,7 @@ fun SettingsScreen() {
     var epg by rememberSaveable { mutableStateOf(s.epgUrl) }
     var tvSaved by remember { mutableStateOf(false) }
     var subLang by rememberSaveable { mutableStateOf(s.subtitleLang) }
+    var audioLang by rememberSaveable { mutableStateOf(s.audioLang) }
     var subSize by rememberSaveable { mutableStateOf(s.subSize) }
     var subColor by rememberSaveable { mutableStateOf(s.subColor) }
     var subBg by rememberSaveable { mutableStateOf(s.subBackground) }
@@ -83,6 +88,7 @@ fun SettingsScreen() {
         Info("Servidor", s.server)
         Info("Usuário", s.userName)
         Info("Versão do app", BuildConfig.VERSION_NAME)
+        if (!tv) SbButton(if (Notices.unread > 0) "Avisos (${Notices.unread})" else "Avisos", onClick = onNotices, primary = false)
 
         QuickConnectAuthorize()
 
@@ -136,6 +142,14 @@ fun SettingsScreen() {
             }
         }
 
+        Text("Áudio", style = MaterialTheme.typography.titleLarge)
+        Text("Idioma preferido. Se você trocar o áudio no player, o app lembra da sua escolha.", color = TextMuted)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf("por" to "Português", "eng" to "Inglês", "spa" to "Espanhol", "jpn" to "Japonês").forEach { (code, label) ->
+                Chip(label, selected = audioLang == code, onClick = { audioLang = code; s.audioLang = code })
+            }
+        }
+
         Text("Aparência da legenda", style = MaterialTheme.typography.titleLarge)
         SubtitlePreview(subSize, subColor, subBg)
         OptionRow("Tamanho", SubtitleStyle.SIZES.map { it.first }, subSize) { subSize = it; s.subSize = it }
@@ -160,7 +174,7 @@ fun SettingsScreen() {
         Text("Manutenção", style = MaterialTheme.typography.titleLarge)
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             SbButton("Limpar cache", onClick = { MemCache.clear() }, icon = Icons.Filled.Refresh, primary = false)
-            SbButton("Sair", onClick = { MemCache.clear(); s.logout() }, icon = Icons.AutoMirrored.Filled.Logout, primary = false)
+            SbButton("Sair", onClick = { MemCache.clear(); Notices.clear(); s.logout() }, icon = Icons.AutoMirrored.Filled.Logout, primary = false)
         }
     }
 }
@@ -205,11 +219,25 @@ private fun SubtitlePreview(size: Int, color: Int, bg: Int) {
             .background(Brush.linearGradient(listOf(Color(0xFF3A4A5A), Color(0xFF1B2430), Color(0xFF5A4636)))),
         contentAlignment = Alignment.BottomCenter
     ) {
-        Text(
-            "Exemplo de legenda no vídeo",
-            modifier = Modifier.padding(bottom = 14.dp).background(box).padding(horizontal = 6.dp, vertical = 2.dp),
-            style = TextStyle(color = fg, fontSize = (18 * scale).sp, fontWeight = FontWeight.Bold, shadow = shadow),
-        )
+        val fontSize = (18 * scale).sp
+        Box(Modifier.padding(bottom = 14.dp).background(box).padding(horizontal = 6.dp, vertical = 2.dp)) {
+            if (bg == 0) {
+                // Contorno grosso, igual ao do player (cerca de 15% do tamanho da letra)
+                val strokePx = with(LocalDensity.current) { fontSize.toPx() } * 0.15f
+                Text(
+                    "Exemplo de legenda no vídeo",
+                    style = TextStyle(
+                        color = Color.Black, fontSize = fontSize, fontWeight = FontWeight.Bold,
+                        shadow = Shadow(Color.Black.copy(alpha = 0.8f), Offset(0f, strokePx * 0.3f), strokePx * 0.7f),
+                        drawStyle = Stroke(width = strokePx, join = StrokeJoin.Round),
+                    ),
+                )
+            }
+            Text(
+                "Exemplo de legenda no vídeo",
+                style = TextStyle(color = fg, fontSize = fontSize, fontWeight = FontWeight.Bold, shadow = if (bg == 0) null else shadow),
+            )
+        }
     }
 }
 

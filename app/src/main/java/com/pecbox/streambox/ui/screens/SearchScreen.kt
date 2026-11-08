@@ -33,6 +33,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.pecbox.streambox.App
+import com.pecbox.streambox.data.Notifier
 import com.pecbox.streambox.data.IndexerItem
 import com.pecbox.streambox.data.Item
 import com.pecbox.streambox.data.SeerrResult
@@ -205,6 +206,7 @@ private fun RequestCard(item: IndexerItem, width: Dp) {
                         else -> null
                     }
                     requestId = idx.request(item, season).id
+                    App.session.addRequestedTitle(Notifier.normalizeTitle(item.title))
                 } catch (e: Exception) {
                     state = ""
                     message = e.friendly()

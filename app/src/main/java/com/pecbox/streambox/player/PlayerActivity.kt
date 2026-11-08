@@ -36,7 +36,9 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.Tracks
+import androidx.media3.common.text.CueGroup
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.common.util.Util
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.DefaultRenderersFactory
@@ -53,14 +55,21 @@ import com.pecbox.streambox.data.MediaSource
 import com.pecbox.streambox.data.MediaStream
 import com.pecbox.streambox.data.Item
 import com.pecbox.streambox.data.MediaSegment
+import com.pecbox.streambox.data.TrackChoice
 import android.content.Intent
 import com.pecbox.streambox.data.friendly
 import kotlinx.coroutines.delay
 import android.view.FocusFinder
 import android.widget.HorizontalScrollView
 import coil.imageLoader
+import coil.request.Disposable
 import coil.request.ImageRequest
+import com.pecbox.streambox.data.Notice
+import com.pecbox.streambox.ui.Notices
+import com.pecbox.streambox.ui.PlaybackEvents
 import com.pecbox.streambox.ui.Watched
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
 import java.util.UUID
 
@@ -82,6 +91,7 @@ class PlayerActivity : ComponentActivity() {
         const val EXTRA_UA = "ua"            // cabeçalhos exigidos pelo canal (lista M3U)
         const val EXTRA_REFERER = "referer"
         private const val TICKS_PER_MS = 10_000L
+        private const val EXIT_WINDOW_MS = 3_000L   // TV ao vivo: tempo para o segundo Voltar
 
         /** (rótulo, bitrate máximo, altura máxima). bitrate 0 = original. */
         val QUALITIES = listOf(
@@ -140,6 +150,20 @@ class PlayerActivity : ComponentActivity() {
     private var liveStreamId: String? = null
     private var externalSub: MediaStream? = null // legenda do Jellyfin carregada como arquivo VTT
     private var audioIndex: Int? = null
+    private var savedSub: TrackChoice? = null // legenda lembrada de episódios anteriores
+    private var subPicked = false                // o usuário já escolheu aqui: vale mais que a lembrada
+    private var subRestored = false              // já aplicada às faixas da fonte atual
+    private var savedAudio: TrackChoice? = null  // áudio lembrado (ou o idioma preferido)
+    private var audioPicked = false
+    private var audioRestored = false
+
+    // Logo (série/filme/canal) no canto superior esquerdo
+    private lateinit var logoView: ImageView
+    private var logoUrl: String? = null
+    private var logoRequest: Disposable? = null
+    private var controlsVisible = false
+    private var logoPeek = false
+    private val endLogoPeek = Runnable { logoPeek = false; updateLogo() }
     private val playSession = UUID.randomUUID().toString().replace("-", "")
     private val handler = Handler(Looper.getMainLooper())
 
@@ -165,6 +189,8 @@ class PlayerActivity : ComponentActivity() {
     private lateinit var episodesTitle: TextView
     private lateinit var episodesRow: LinearLayout
     private lateinit var seekOsd: TextView
+    private lateinit var outlineSubs: OutlineSubtitles
+    private var endedNaturally = false     // chegou ao fim do vídeo (para marcar como assistido)
     private var seekTarget = -1L           // posição acumulada enquanto o usuário aperta ←/→
     private lateinit var http: DefaultHttpDataSource.Factory
 
@@ -188,11 +214,20 @@ class PlayerActivity : ComponentActivity() {
     private lateinit var sideScroll: android.widget.ScrollView
     private var groups: List<String> = emptyList()
     private var groupIdx = 0
-    private val hideInfo = Runnable { if (::infoBar.isInitialized) infoBar.visibility = View.GONE }
+    private lateinit var exitHint: TextView
+    private val hideExitHint = Runnable { if (::exitHint.isInitialized) exitHint.visibility = View.GONE }
+    private lateinit var noticeOsd: TextView
+    private val hideNotice = Runnable { if (::noticeOsd.isInitialized) noticeOsd.visibility = View.GONE }
+    private val noticeSink: (Notice) -> Unit = { showNotice(it) }
+    private val hideInfo = Runnable { if (::infoBar.isInitialized) infoBar.visibility = View.GONE; updateLogo() }
     private val tuneTask = Runnable { if (pendingIndex >= 0) tuneTo(pendingIndex) }
     private val numberTask = Runnable { tuneNumber() }
     private val seekCommit = Runnable { seekTarget = -1L }
-    private val hideOsd = Runnable { if (::seekOsd.isInitialized) seekOsd.visibility = View.GONE }
+    private val hideOsd = Runnable {
+        if (!::seekOsd.isInitialized) return@Runnable
+        // Pausado: o aviso volta a mostrar "Pausado" em vez de sumir
+        if (!isLive && player?.playWhenReady == false) showPauseOsd(true) else seekOsd.visibility = View.GONE
+    }
 
     private val segmentTask = object : Runnable {
         override fun run() {
@@ -228,6 +263,8 @@ class PlayerActivity : ComponentActivity() {
             setShowNextButton(false)
             setShowPreviousButton(false)
             controllerShowTimeoutMs = 5000
+            // Pausar não abre a barra sozinho: assim OK pausa com um clique e ←/→ continuam avançando/recuando
+            controllerAutoShow = false
             setShowSubtitleButton(false) // usamos o nosso botão de legendas
         }
         applySubtitleStyle()
@@ -273,7 +310,7 @@ class PlayerActivity : ComponentActivity() {
             .build()
         exo.trackSelectionParameters = exo.trackSelectionParameters.buildUpon()
             .setPreferredTextLanguage(session.subtitleLang.take(2))
-            .setPreferredAudioLanguage("pt")
+            .setPreferredAudioLanguage(session.audioLang)
             .build()
         exo.addListener(listener)
         player = exo
@@ -309,11 +346,16 @@ class PlayerActivity : ComponentActivity() {
         // Faixas e legendas em segundo plano (não atrasa o início)
         lifecycleScope.launch {
             source = runCatching { jf.playbackInfo(id).sources.firstOrNull() }.getOrNull()
+            restoreTracks()
         }
         // Abertura, créditos e próximo episódio (também em segundo plano)
         lifecycleScope.launch {
             val item = runCatching { jf.item(id) }.getOrNull() ?: return@launch
             current = item
+            setLogo(jf.logoImage(item))
+            if (!subPicked) savedSub = session.trackChoice("sub", item.seriesId)
+            if (!audioPicked) savedAudio = session.trackChoice("audio", item.seriesId) ?: TrackChoice(language = session.audioLang)
+            restoreTracks()
             segments = runCatching { jf.mediaSegments(id, item.runTimeTicks, item.chapters) }.getOrDefault(emptyList())
             val sid = item.seriesId
             if (item.isEpisode && sid != null) {
@@ -359,6 +401,8 @@ class PlayerActivity : ComponentActivity() {
 
     private fun load(url: String, positionMs: Long, hls: Boolean) {
         val p = player ?: return
+        subRestored = false      // faixas novas: legenda e áudio lembrados precisam ser aplicados de novo
+        audioRestored = false
         currentUrl = url
         currentIsHls = hls
         val builder = MediaItem.Builder()
@@ -414,9 +458,11 @@ class PlayerActivity : ComponentActivity() {
                     if (!isLive) {
                         report { id, ticks, _ -> jf.reportStart(id, ticks, method, playSession) }
                         handler.postDelayed(progressTask, 10_000)
+                        peekLogo(view.controllerShowTimeoutMs.toLong())
                     }
                 }
                 Player.STATE_ENDED -> if (!isLive) {
+                    endedNaturally = true
                     if (next != null && !nextDismissed) playNext() else finish()
                 } else {
                     reconnect("A transmissão foi interrompida")   // fonte fechou a conexão: abre de novo
@@ -426,12 +472,23 @@ class PlayerActivity : ComponentActivity() {
         }
 
         override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+            if (!isLive && started && !isFinishing) {
+                if (view.isControllerFullyVisible) { if (playWhenReady) handler.post(hideOsd) }
+                else showPauseOsd(!playWhenReady)
+            }
             // Só conta como pausa do usuário o que veio do controle/botões (ou fone desconectado / ligação)
             userPaused = !playWhenReady && reason in setOf(
                 Player.PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST,
                 Player.PLAY_WHEN_READY_CHANGE_REASON_AUDIO_FOCUS_LOSS,
                 Player.PLAY_WHEN_READY_CHANGE_REASON_AUDIO_BECOMING_NOISY,
             )
+            updateLogo()
+        }
+
+        override fun onTracksChanged(tracks: Tracks) = restoreTracks()
+
+        override fun onCues(cueGroup: CueGroup) {
+            if (::outlineSubs.isInitialized) outlineSubs.setCues(cueGroup.cues)
         }
 
         override fun onIsPlayingChanged(isPlaying: Boolean) {
@@ -520,10 +577,65 @@ class PlayerActivity : ComponentActivity() {
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.START,
             ).apply { setMargins(dp(14), dp(14), 0, 0) })
         }
+        // Logo: fica abaixo dos botões redondos nas telas de toque
+        logoView = ImageView(this).apply {
+            scaleType = ImageView.ScaleType.FIT_START
+            alpha = 0f
+            visibility = View.GONE
+        }
+        (view.parent as? FrameLayout)?.addView(logoView, FrameLayout.LayoutParams(
+            dp(if (tvBox) 240 else 140), dp(if (tvBox) 96 else 56), Gravity.TOP or Gravity.START,
+        ).apply { setMargins(dp(if (tvBox) 32 else 14), dp(if (tvBox) 24 else 72), 0, 0) })
         view.setControllerVisibilityListener(PlayerView.ControllerVisibilityListener { v ->
+            controlsVisible = v == View.VISIBLE
+            updateLogo()
             if (basic == null) optionsBar.visibility = v
             top.visibility = if (tvBox) View.GONE else v
+            // Barra aberta: esconde o aviso "Pausado"; fechou pausado: mostra de novo
+            if (!isLive && ::seekOsd.isInitialized) {
+                if (v == View.VISIBLE) { handler.removeCallbacks(hideOsd); seekOsd.visibility = View.GONE }
+                else if (player?.playWhenReady == false) showPauseOsd(true)
+            }
         })
+    }
+
+    /** Troca a imagem do logo (null = sem logo: nada aparece). */
+    private fun setLogo(url: String?) {
+        if (!::logoView.isInitialized || url == logoUrl) return
+        logoUrl = url
+        logoRequest?.dispose()
+        logoView.setImageDrawable(null)
+        updateLogo()
+        if (url == null) return
+        logoRequest = imageLoader.enqueue(
+            ImageRequest.Builder(this).data(url)
+                .size(logoView.layoutParams.width, logoView.layoutParams.height)
+                .target(onSuccess = { logoView.setImageDrawable(it); updateLogo() })
+                .build()
+        )
+    }
+
+    /** Mostra o logo junto com os controles, a faixa do canal ou enquanto estiver pausado. */
+    private fun updateLogo() {
+        if (!::logoView.isInitialized) return
+        val liveInfo = isLive && infoBar.visibility == View.VISIBLE
+        val show = logoView.drawable != null && !sideOpen && !episodesOpen &&
+            (controlsVisible || logoPeek || liveInfo || player?.playWhenReady == false)
+        logoView.animate().cancel()
+        if (show) {
+            logoView.visibility = View.VISIBLE
+            logoView.animate().alpha(1f).setDuration(200).start()
+        } else {
+            logoView.animate().alpha(0f).setDuration(200).withEndAction { logoView.visibility = View.GONE }.start()
+        }
+    }
+
+    /** Mostra o logo por um tempo sem abrir a barra (assim OK e ←/→ continuam pausando e avançando). */
+    private fun peekLogo(ms: Long) {
+        logoPeek = true
+        updateLogo()
+        handler.removeCallbacks(endLogoPeek)
+        handler.postDelayed(endLogoPeek, ms)
     }
 
     /** Botão redondo semitransparente (voltar / canais) para telas de toque. */
@@ -567,9 +679,29 @@ class PlayerActivity : ComponentActivity() {
         }
         sv.setApplyEmbeddedStyles(false)
         sv.setApplyEmbeddedFontSizes(false)
-        sv.setStyle(CaptionStyleCompat(color, bg, Color.TRANSPARENT, edge, Color.BLACK, Typeface.DEFAULT_BOLD))
-        sv.setFractionalTextSize(SubtitleView.DEFAULT_TEXT_SIZE_FRACTION * 1.15f * size)
+        val fraction = SubtitleView.DEFAULT_TEXT_SIZE_FRACTION * 1.15f * size
+        sv.setFractionalTextSize(fraction)
         sv.setBottomPaddingFraction(0.08f)
+        val outline = session.subBackground !in 1..3
+        if (outline) {
+            // Contorno: o texto é desenhado pela nossa camada (contorno grosso). O SubtitleView
+            // fica com texto invisível e só mostra legendas em imagem (PGS/VobSub).
+            sv.setStyle(CaptionStyleCompat(Color.TRANSPARENT, Color.TRANSPARENT, Color.TRANSPARENT, CaptionStyleCompat.EDGE_TYPE_NONE, Color.TRANSPARENT, Typeface.DEFAULT_BOLD))
+            if (!::outlineSubs.isInitialized) {
+                outlineSubs = OutlineSubtitles(this)
+                (sv.parent as? ViewGroup)?.let { parent ->
+                    parent.addView(outlineSubs, parent.indexOfChild(sv) + 1, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+                }
+                player?.let { outlineSubs.setCues(it.currentCues.cues) }
+            }
+            outlineSubs.textColor = color
+            outlineSubs.sizeFraction = fraction
+            outlineSubs.bottomPaddingFraction = 0.08f
+            outlineSubs.visibility = View.VISIBLE
+        } else {
+            sv.setStyle(CaptionStyleCompat(color, bg, Color.TRANSPARENT, edge, Color.BLACK, Typeface.DEFAULT_BOLD))
+            if (::outlineSubs.isInitialized) outlineSubs.visibility = View.GONE
+        }
     }
 
     private fun showAppearance() {
@@ -650,8 +782,8 @@ class PlayerActivity : ComponentActivity() {
         val src = source
         if (src != null && itemId != null) {
             val loaded = externalSub?.index
-            src.subtitles
-                .filter { (it.isExternal || currentIsHls) && (it.isText || it.isExternal) && it.index != loaded }
+            serverSubs(src)
+                .filter { it.index != loaded }
                 .forEach { options += SubOption.FromServer(it, "${it.label} (servidor)") }
         }
         if (itemId != null && !isLive) options += SubOption.Download
@@ -663,10 +795,13 @@ class PlayerActivity : ComponentActivity() {
         choose("Legendas", options.map { it.label }, checked) { i ->
             when (val o = options[i]) {
                 SubOption.Off -> {
+                    rememberSub(TrackChoice(off = true))
                     p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
                         .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true).build()
                 }
                 is SubOption.Embedded -> {
+                    val f = o.group.getTrackFormat(o.index)
+                    rememberSub(TrackChoice(language = f.language, label = f.label, forced = isForced(f.selectionFlags)))
                     p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
                         .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
                         .setOverrideForType(TrackSelectionOverride(o.group.mediaTrackGroup, o.index))
@@ -674,6 +809,7 @@ class PlayerActivity : ComponentActivity() {
                 }
                 is SubOption.FromServer -> {
                     externalSub = o.stream
+                    rememberSub(o.stream.toChoice())
                     p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
                         .clearOverridesOfType(C.TRACK_TYPE_TEXT)
                         .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false).build()
@@ -683,6 +819,126 @@ class PlayerActivity : ComponentActivity() {
                 SubOption.Appearance -> showAppearance()
             }
         }
+    }
+
+    /** Legendas do servidor que o player só mostra se forem carregadas como arquivo à parte. */
+    private fun serverSubs(src: MediaSource) = src.subtitles.filter { (it.isExternal || currentIsHls) && (it.isText || it.isExternal) }
+
+    private fun isForced(selectionFlags: Int) = (selectionFlags and C.SELECTION_FLAG_FORCED) != 0
+
+    private fun MediaStream.toChoice() = TrackChoice(language = language, label = label, forced = isForced)
+
+    private fun rememberSub(choice: TrackChoice) {
+        subPicked = true
+        subRestored = true
+        savedSub = choice
+        session.saveTrackChoice("sub", current?.seriesId, choice)
+    }
+
+    private fun rememberAudio(choice: TrackChoice) {
+        audioPicked = true
+        audioRestored = true
+        savedAudio = choice
+        session.saveTrackChoice("audio", current?.seriesId, choice)
+    }
+
+    private fun restoreTracks() {
+        if (!restoreAudio()) restoreSubtitle()
+    }
+
+    /** Aplica o áudio lembrado. Devolve true se precisou recarregar a fonte (a legenda fica para depois). */
+    private fun restoreAudio(): Boolean {
+        val p = player ?: return false
+        val choice = savedAudio ?: return false
+        if (audioRestored || isLive || p.currentTracks.isEmpty) return false
+        if (currentIsHls) {
+            // Na conversão o servidor manda uma faixa só: a troca é pedida na URL
+            val streams = source?.streams?.filter { it.type == "Audio" } ?: return false
+            audioRestored = true
+            val best = streams.maxByOrNull { trackScore(choice, it.language, it.label, choice.forced) } ?: return false
+            if (trackScore(choice, best.language, best.label, choice.forced) == 0) return false
+            val playing = audioIndex ?: (streams.firstOrNull { it.isDefault } ?: streams.first()).index
+            if (best.index == playing) return false
+            audioIndex = best.index
+            reload()
+            return true
+        }
+        audioRestored = true
+        var bestScore = 0
+        var override: TrackSelectionOverride? = null
+        for (group in p.currentTracks.groups) {
+            if (group.type != C.TRACK_TYPE_AUDIO) continue
+            for (i in 0 until group.length) {
+                if (!group.isTrackSupported(i)) continue
+                val f = group.getTrackFormat(i)
+                val score = trackScore(choice, f.language, f.label, choice.forced)
+                if (score > bestScore) { bestScore = score; override = TrackSelectionOverride(group.mediaTrackGroup, i) }
+            }
+        }
+        override?.let { p.trackSelectionParameters = p.trackSelectionParameters.buildUpon().setOverrideForType(it).build() }
+        return false
+    }
+
+    /** Idioma sem a região ("pt-BR", "por" e "pob" viram "pt"). */
+    private fun baseLanguage(lang: String?): String? =
+        lang?.ifBlank { null }?.let { Util.normalizeLanguageCode(it) }?.lowercase()?.substringBefore('-')?.let { if (it == "pob") "pt" else it }
+
+    /** Quanto uma faixa se parece com a legenda lembrada (0 = não serve). Forçada só combina com forçada. */
+    private fun trackScore(choice: TrackChoice, language: String?, label: String?, forced: Boolean): Int {
+        if (forced != choice.forced) return 0
+        val sameLabel = label != null && label.equals(choice.label, ignoreCase = true)
+        val wanted = baseLanguage(choice.language) ?: return if (sameLabel) 1 else 0
+        if (baseLanguage(language) != wanted) return 0
+        val sameRegion = language.equals(choice.language, ignoreCase = true)
+        return 1 + (if (sameRegion) 1 else 0) + (if (sameLabel) 2 else 0)
+    }
+
+    /** Aplica a legenda lembrada assim que as faixas do player e as do servidor estiverem disponíveis. */
+    private fun restoreSubtitle() {
+        val p = player ?: return
+        val choice = savedSub ?: return
+        if (subRestored || isLive || p.currentTracks.isEmpty) return
+        if (choice.off) {
+            subRestored = true
+            p.trackSelectionParameters = p.trackSelectionParameters.buildUpon().setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true).build()
+            return
+        }
+        val src = source ?: return
+        subRestored = true
+        var bestScore = 0
+        var apply: (() -> Unit)? = null
+        for (group in p.currentTracks.groups) {
+            if (group.type != C.TRACK_TYPE_TEXT) continue
+            for (i in 0 until group.length) {
+                if (!group.isTrackSupported(i)) continue
+                val f = group.getTrackFormat(i)
+                val score = trackScore(choice, f.language, f.label, isForced(f.selectionFlags))
+                if (score > bestScore) {
+                    bestScore = score
+                    apply = {
+                        p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
+                            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+                            .setOverrideForType(TrackSelectionOverride(group.mediaTrackGroup, i))
+                            .build()
+                    }
+                }
+            }
+        }
+        // Com uma legenda do servidor já carregada ela aparece nas faixas acima: não recarrega de novo
+        if (externalSub == null) for (s in serverSubs(src)) {
+            val score = trackScore(choice, s.language, s.label, s.isForced)
+            if (score > bestScore) {
+                bestScore = score
+                apply = {
+                    externalSub = s
+                    p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
+                        .clearOverridesOfType(C.TRACK_TYPE_TEXT)
+                        .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false).build()
+                    reloadKeepingSource()
+                }
+            }
+        }
+        apply?.invoke()
     }
 
     /** Recarrega a fonte atual (mesma URL) para anexar a legenda escolhida. */
@@ -730,6 +986,7 @@ class PlayerActivity : ComponentActivity() {
                     Toast.makeText(this@PlayerActivity, "Legenda baixada. Abra o menu Legendas em instantes.", Toast.LENGTH_LONG).show()
                 } else {
                     externalSub = sub
+                    rememberSub(sub.toChoice())
                     player?.let { p ->
                         p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
                             .clearOverridesOfType(C.TRACK_TYPE_TEXT)
@@ -756,6 +1013,7 @@ class PlayerActivity : ComponentActivity() {
             val label = listOfNotNull(f.label, f.language?.uppercase(), ch).joinToString(" · ").ifBlank { "Faixa ${entries.size + 1}" }
             if (g.isTrackSelected(i)) checked = entries.size
             val action: () -> Unit = {
+                rememberAudio(TrackChoice(language = f.language, label = f.label))
                 p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
                     .setOverrideForType(TrackSelectionOverride(g.mediaTrackGroup, i)).build()
             }
@@ -765,7 +1023,7 @@ class PlayerActivity : ComponentActivity() {
         val src = source
         if (currentIsHls && src != null && !isLive) {
             src.streams.filter { it.type == "Audio" }.forEach { a ->
-                val action: () -> Unit = { audioIndex = a.index; reload() }
+                val action: () -> Unit = { rememberAudio(a.toChoice()); audioIndex = a.index; reload() }
                 entries += "${a.label} (servidor)" to action
             }
         }
@@ -914,6 +1172,27 @@ class PlayerActivity : ComponentActivity() {
         root.addView(infoBar, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM)
             .apply { setMargins(dp(40), 0, dp(40), dp(28)) })
 
+        // Aviso discreto do primeiro Voltar
+        exitHint = tv(14f, 0xFFE0E0E0.toInt()).apply {
+            text = "Aperte Voltar de novo para sair da TV ao vivo"
+            visibility = View.GONE
+            setPadding(dp(16), dp(7), dp(16), dp(7))
+            background = GradientDrawable().apply { cornerRadius = dp(16).toFloat(); setColor(0x99000000.toInt()) }
+        }
+        root.addView(exitHint, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.CENTER_HORIZONTAL)
+            .apply { topMargin = dp(24) })
+
+        // Mensagem enviada pelo painel do Jellyfin durante a reprodução
+        noticeOsd = tv(14f).apply {
+            maxLines = 5
+            maxWidth = dp(380)
+            visibility = View.GONE
+            setPadding(dp(16), dp(10), dp(16), dp(10))
+            background = GradientDrawable().apply { cornerRadius = dp(12).toFloat(); setColor(0xCC000000.toInt()) }
+        }
+        root.addView(noticeOsd, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.END)
+            .apply { setMargins(0, dp(24), dp(24), 0) })
+
         // Lista lateral (OK): canais com número, logo, "agora" e "a seguir"; ←/→ troca o grupo
         sideGroup = tv(18f, bold = true).apply {
             setPadding(dp(24), dp(28), dp(24), dp(12))
@@ -956,6 +1235,7 @@ class PlayerActivity : ComponentActivity() {
         }
         infoNum.text = if (index >= 0) LiveQueue.numberOf(index) else ""
         infoName.text = ch.name
+        if (!sideOpen) setLogo(ch.logo)      // navegar pela lista lateral não troca o logo do canal
         infoLogo.setImageDrawable(null)
         ch.logo?.let { url -> imageLoader.enqueue(ImageRequest.Builder(this).data(url).target(infoLogo).build()) }
         infoLogo.visibility = if (ch.logo != null) View.VISIBLE else View.GONE
@@ -972,6 +1252,7 @@ class PlayerActivity : ComponentActivity() {
         infoNext.visibility = if (ch.next != null) View.VISIBLE else View.GONE
         infoClock.text = fmtClock(now)
         infoBar.visibility = View.VISIBLE
+        updateLogo()
         handler.removeCallbacks(hideInfo)
         if (!sticky) handler.postDelayed(hideInfo, 4500)
     }
@@ -1049,7 +1330,26 @@ class PlayerActivity : ComponentActivity() {
 
     private fun closeSide() {
         sidePanel.visibility = View.GONE
+        updateLogo()
         handler.postDelayed(hideInfo, 1500)
+    }
+
+    private fun showNotice(n: Notice) {
+        noticeOsd.text = listOf(n.title, n.text).filter { it.isNotBlank() }.joinToString("\n")
+        noticeOsd.visibility = View.VISIBLE
+        handler.removeCallbacks(hideNotice)
+        handler.postDelayed(hideNotice, 8000)
+    }
+
+    /** Voltar na TV ao vivo: o primeiro aperto só avisa; o segundo volta para a lista de canais. */
+    private fun backToExit() {
+        val now = System.currentTimeMillis()
+        if (now - lastBackAt <= EXIT_WINDOW_MS) { finish(); return }
+        lastBackAt = now
+        view.hideController()
+        exitHint.visibility = View.VISIBLE
+        handler.removeCallbacks(hideExitHint)
+        handler.postDelayed(hideExitHint, EXIT_WINDOW_MS)
     }
 
     /** Monta as linhas do grupo escolhido (com uma janela em volta do canal atual em listas grandes). */
@@ -1134,6 +1434,10 @@ class PlayerActivity : ComponentActivity() {
             }
             return false        // ↑/↓/OK seguem para a lista
         }
+        if (code == KeyEvent.KEYCODE_BACK) {
+            if (first) backToExit()
+            return true
+        }
         if (view.isControllerFullyVisible) return false
         when (code) {
             KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_CHANNEL_UP -> { if (down) zap(+1); return true }
@@ -1145,18 +1449,6 @@ class PlayerActivity : ComponentActivity() {
             KeyEvent.KEYCODE_INFO, KeyEvent.KEYCODE_GUIDE -> { if (first) { if (code == KeyEvent.KEYCODE_GUIDE) openSide() else showInfo() }; return true }
             KeyEvent.KEYCODE_MENU -> { if (first) view.showController(); return true }
             KeyEvent.KEYCODE_LAST_CHANNEL -> { if (first && lastChIndex >= 0) tuneTo(lastChIndex); return true }
-            KeyEvent.KEYCODE_BACK -> {
-                // Voltar: alterna com o canal anterior; apertando de novo em seguida, sai
-                if (!first) return true
-                val now = System.currentTimeMillis()
-                if (lastChIndex >= 0 && now - lastBackAt > 2500) {
-                    lastBackAt = now
-                    tuneTo(lastChIndex)
-                    Toast.makeText(this, "Canal anterior · aperte Voltar de novo para sair", Toast.LENGTH_SHORT).show()
-                    return true
-                }
-                return false
-            }
         }
         val digit = when (code) {
             in KeyEvent.KEYCODE_0..KeyEvent.KEYCODE_9 -> code - KeyEvent.KEYCODE_0
@@ -1223,6 +1515,7 @@ class PlayerActivity : ComponentActivity() {
         if (episodesRow.childCount == 0) return
         view.hideController()
         episodesPanel.visibility = View.VISIBLE
+        updateLogo()
         val target = (0 until episodesRow.childCount).map { episodesRow.getChildAt(it) }.firstOrNull { it.tag == "current" }
             ?: episodesRow.getChildAt(0)
         target.post { target.requestFocus() }
@@ -1230,6 +1523,7 @@ class PlayerActivity : ComponentActivity() {
 
     private fun hideEpisodes(showControls: Boolean = false) {
         episodesPanel.visibility = View.GONE
+        updateLogo()
         if (showControls) view.showController()
     }
 
@@ -1243,8 +1537,26 @@ class PlayerActivity : ComponentActivity() {
         p.seekTo(seekTarget)
         seekOsd.text = (if (forward) "⏩  " else "⏪  ") + fmtTime(seekTarget) + (if (dur != Long.MAX_VALUE) "  /  " + fmtTime(dur) else "")
         seekOsd.visibility = View.VISIBLE
+        peekLogo(1500)
         handler.removeCallbacks(hideOsd); handler.postDelayed(hideOsd, 1500)
         handler.removeCallbacks(seekCommit); handler.postDelayed(seekCommit, 900)
+    }
+
+    /** Aviso de pausa (fica na tela enquanto estiver pausado) ou de "continuar" (some sozinho). */
+    private fun showPauseOsd(paused: Boolean) {
+        val p = player ?: return
+        if (!::seekOsd.isInitialized || isLive) return
+        handler.removeCallbacks(hideOsd)
+        val dur = p.duration.takeIf { it > 0 }
+        seekOsd.text = (if (paused) "⏸  Pausado   " else "▶  ") + fmtTime(p.currentPosition) +
+            (dur?.let { "  /  " + fmtTime(it) } ?: "")
+        seekOsd.visibility = View.VISIBLE
+        if (!paused) handler.postDelayed(hideOsd, 1200)
+    }
+
+    private fun togglePause() {
+        val p = player ?: return
+        p.playWhenReady = !p.playWhenReady
     }
 
     private fun fmtTime(ms: Long): String {
@@ -1407,6 +1719,12 @@ class PlayerActivity : ComponentActivity() {
                 return true
             }
         }
+        // OK com os controles escondidos: pausa/continua com um clique só (↑/↓ abrem os controles)
+        if (!isLive && !view.isControllerFullyVisible && code in listOf(
+                KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER, KeyEvent.KEYCODE_BUTTON_A)) {
+            if (down && event.repeatCount == 0) togglePause()
+            return true
+        }
         // ←/→ com os controles escondidos: avança/recua o vídeo (filmes e episódios)
         if (!isLive && !view.isControllerFullyVisible && (code == KeyEvent.KEYCODE_DPAD_LEFT || code == KeyEvent.KEYCODE_DPAD_RIGHT)) {
             if (down) seekBy(forward = code == KeyEvent.KEYCODE_DPAD_RIGHT, held = event.repeatCount > 2)
@@ -1429,9 +1747,11 @@ class PlayerActivity : ComponentActivity() {
             KeyEvent.KEYCODE_MENU, KeyEvent.KEYCODE_SETTINGS -> { showMenu(); return true }
             KeyEvent.KEYCODE_CAPTIONS -> { showSubtitles(); return true }
             KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, KeyEvent.KEYCODE_SPACE -> {
-                player?.let { it.playWhenReady = !it.playWhenReady }
+                togglePause()
                 return true
             }
+            KeyEvent.KEYCODE_MEDIA_PLAY -> { player?.playWhenReady = true; return true }
+            KeyEvent.KEYCODE_MEDIA_PAUSE -> { player?.playWhenReady = false; return true }
         }
         if (!view.isControllerFullyVisible && keyCode in listOf(KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN)) {
             view.showController()
@@ -1445,8 +1765,15 @@ class PlayerActivity : ComponentActivity() {
         if (!isLive) player?.pause()
     }
 
+    override fun onStart() {
+        super.onStart()
+        Notices.playerSink = noticeSink
+    }
+
     override fun onStop() {
         super.onStop()
+        // Ao trocar de episódio o player novo já assumiu antes deste parar
+        if (Notices.playerSink === noticeSink) Notices.playerSink = null
         if (isFinishing) release()
     }
 
@@ -1466,7 +1793,28 @@ class PlayerActivity : ComponentActivity() {
         handler.removeCallbacks(hideInfo)
         handler.removeCallbacks(tuneTask)
         handler.removeCallbacks(numberTask)
-        if (started && !isLive) report { id, ticks, _ -> jf.reportStopped(id, ticks, method, playSession) }
+        handler.removeCallbacks(endLogoPeek)
+        handler.removeCallbacks(hideExitHint)
+        handler.removeCallbacks(hideNotice)
+        if (started && !isLive) {
+            val id = itemId
+            val posMs = p.currentPosition
+            val durMs = p.duration.takeIf { it > 0 } ?: ((current?.runTimeTicks ?: 0L) / TICKS_PER_MS)
+            val outro = segments.firstOrNull { it.type == "Outro" }
+            // Terminou de verdade: chegou ao fim, entrou nos créditos ou passou de 90%
+            val finished = endedNaturally || (durMs > 0 && posMs >= durMs * 0.9) ||
+                (outro != null && posMs * TICKS_PER_MS >= outro.startTicks)
+            if (finished && id != null) Watched.markLocal(id)
+            val ticks = posMs * TICKS_PER_MS
+            App.scope.launch {
+                if (id != null) {
+                    runCatching { jf.reportStopped(id, ticks, method, playSession) }
+                    // O Jellyfin nem sempre marca como visto pelo "parou no fim"; marcamos nós mesmos
+                    if (finished) runCatching { jf.setPlayed(id, true) }
+                }
+                withContext(Dispatchers.Main) { PlaybackEvents.playerClosed() }
+            }
+        }
         liveStreamId?.let { live -> App.scope.launch { runCatching { jf.closeLiveStream(live) } } }
         p.removeListener(listener)
         p.release()

@@ -57,6 +57,10 @@ data class Item(
     @SerialName("ParentBackdropItemId") val parentBackdropId: String? = null,
     @SerialName("ParentBackdropImageTags") val parentBackdropTags: List<String> = emptyList(),
     @SerialName("SeriesPrimaryImageTag") val seriesPrimaryTag: String? = null,
+    @SerialName("ParentLogoItemId") val parentLogoId: String? = null,
+    @SerialName("ParentLogoImageTag") val parentLogoTag: String? = null,
+    @SerialName("DateCreated") val dateCreated: String? = null,
+    @SerialName("ProviderIds") val providerIds: Map<String, String> = emptyMap(),
     @SerialName("UserData") val userData: UserData? = null,
     // TV ao vivo
     @SerialName("ChannelNumber") val channelNumber: String? = null,
@@ -131,6 +135,15 @@ data class MediaStream(
 ) {
     val label: String get() = displayTitle ?: title ?: language ?: "Faixa $index"
 }
+
+/** Faixa (legenda ou áudio) escolhida pelo usuário, descrita de um jeito que também a encontre em outro episódio. */
+@Serializable
+data class TrackChoice(
+    val off: Boolean = false,
+    val language: String? = null,
+    val label: String? = null,
+    val forced: Boolean = false,
+)
 
 @Serializable
 data class MediaSource(
@@ -250,7 +263,37 @@ data class SeerrUser(
 }
 
 @Serializable
+data class SeerrRequestMedia(val tmdbId: Int? = null)
+
+@Serializable
+data class SeerrRequestEntry(val media: SeerrRequestMedia? = null)
+
+@Serializable
+data class SeerrRequests(val results: List<SeerrRequestEntry> = emptyList())
+
+@Serializable
 data class SeerrSeason(val seasonNumber: Int = 0)
 
 @Serializable
 data class SeerrTv(val seasons: List<SeerrSeason> = emptyList())
+
+/* ----------------------------- Avisos ----------------------------- */
+
+@Serializable
+data class Notice(
+    val id: String,
+    val kind: String,                   // ver Notice.MESSAGE etc.
+    val title: String,
+    val text: String,
+    val time: Long,
+    val itemId: String? = null,         // abre os detalhes deste item
+    val url: String? = null,            // abre esta página
+    val read: Boolean = false,
+) {
+    companion object {
+        const val MESSAGE = "message"   // enviada pelo painel do Jellyfin
+        const val UPDATE = "update"
+        const val NEW = "new"
+        const val REQUESTED = "requested"
+    }
+}

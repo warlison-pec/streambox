@@ -52,6 +52,13 @@ class SeerrApi(private val s: Session) {
         return AppJson.decodeFromString(SeerrUser.serializer(), text).label.also { s.seerrUser = it }
     }
 
+    /** Códigos TMDB de tudo que este usuário pediu no Seerr. */
+    suspend fun requestedTmdbIds(): Set<Int> {
+        val me = AppJson.decodeFromString(SeerrUser.serializer(), s.http.fetch(request("/auth/me").build()))
+        val text = s.http.fetch(request("/request?take=200&sort=modified&requestedBy=${me.id}").build())
+        return AppJson.decodeFromString(SeerrRequests.serializer(), text).results.mapNotNull { it.media?.tmdbId }.toSet()
+    }
+
     fun logout() {
         s.seerrCookie = ""
         s.seerrApiKey = ""

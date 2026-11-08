@@ -1,6 +1,7 @@
 package com.pecbox.streambox.ui
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -24,11 +25,13 @@ import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.LiveTv
 import androidx.compose.material.icons.filled.Movie
+import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.VideoLibrary
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Tv
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -44,10 +47,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.pecbox.streambox.App
+import com.pecbox.streambox.R
 import com.pecbox.streambox.ui.components.tvFocus
 import com.pecbox.streambox.ui.screens.DetailsScreen
 import com.pecbox.streambox.ui.screens.HomeScreen
@@ -56,6 +61,7 @@ import com.pecbox.streambox.data.libraryItemTypes
 import com.pecbox.streambox.ui.screens.LibrariesScreen
 import com.pecbox.streambox.ui.screens.LibraryScreen
 import com.pecbox.streambox.ui.screens.LiveTvScreen
+import com.pecbox.streambox.ui.screens.NoticesScreen
 import com.pecbox.streambox.ui.screens.SearchScreen
 import com.pecbox.streambox.ui.screens.SettingsScreen
 import com.pecbox.streambox.ui.theme.LocalIsTv
@@ -74,6 +80,7 @@ sealed interface Route {
     data object Search : Route { override val key = "search" }
     data object LiveTv : Route { override val key = "livetv" }
     data object Settings : Route { override val key = "settings" }
+    data object Notices : Route { override val key = "notices" }
 }
 
 /** Pilha de navegação simples (sem biblioteca extra). */
@@ -83,7 +90,16 @@ class Nav(private val stack: MutableList<Route>) {
     fun back() { if (stack.size > 1) stack.removeAt(stack.lastIndex) }
 }
 
-private data class TopItem(val label: String, val icon: ImageVector, val route: Route)
+private data class TopItem(val label: String, val icon: ImageVector, val route: Route, val badge: Boolean = false)
+
+/** Ícone com um pontinho laranja quando há aviso não lido. */
+@Composable
+private fun BadgedIcon(icon: ImageVector, label: String, badge: Boolean, tint: Color = LocalContentColor.current, modifier: Modifier = Modifier) {
+    Box {
+        Icon(icon, contentDescription = label, tint = tint, modifier = modifier)
+        if (badge) Box(Modifier.align(Alignment.TopEnd).size(8.dp).clip(RoundedCornerShape(4.dp)).background(Orange))
+    }
+}
 
 @Composable
 fun AppShell() {
@@ -107,7 +123,8 @@ fun AppShell() {
         }
         add(TopItem(if (tv) "TV ao vivo" else "Ao vivo", Icons.Filled.LiveTv, Route.LiveTv))
         add(TopItem("Buscar", Icons.Filled.Search, Route.Search))
-        add(TopItem("Ajustes", Icons.Filled.Settings, Route.Settings))
+        if (tv) add(TopItem("Avisos", Icons.Filled.Notifications, Route.Notices, badge = Notices.unread > 0))
+        add(TopItem("Ajustes", Icons.Filled.Settings, Route.Settings, badge = !tv && Notices.unread > 0))
     }
     val current = stack.last()
     val rootKey = stack.first().key
@@ -121,11 +138,13 @@ fun AppShell() {
                 is Route.Details -> DetailsScreen(current.id, nav)
                 Route.Search -> SearchScreen(nav)
                 Route.LiveTv -> LiveTvScreen(nav)
-                Route.Settings -> SettingsScreen()
+                Route.Settings -> SettingsScreen(onNotices = { nav.push(Route.Notices) })
+                Route.Notices -> NoticesScreen(nav)
             }
         }
     }
 
+    Box(Modifier.fillMaxSize()) {
     if (tv) {
         Row(Modifier.fillMaxSize()) {
             SideRail(top, rootKey) { nav.root(it) }
@@ -140,7 +159,7 @@ fun AppShell() {
                         NavigationBarItem(
                             selected = t.route.key == rootKey,
                             onClick = { nav.root(t.route) },
-                            icon = { Icon(t.icon, contentDescription = t.label) },
+                            icon = { BadgedIcon(t.icon, t.label, t.badge) },
                             label = { Text(t.label) },
                             colors = NavigationBarItemDefaults.colors(
                                 selectedIconColor = Color.Black,
@@ -157,6 +176,8 @@ fun AppShell() {
             Box(Modifier.fillMaxSize().padding(padding)) { content() }
         }
     }
+    NoticeBanner(Modifier.align(Alignment.TopEnd).padding(16.dp)) { nav.push(Route.Notices) }
+    }
 }
 
 @Composable
@@ -166,11 +187,9 @@ private fun SideRail(items: List<TopItem>, selectedKey: String, onSelect: (Route
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        Box(
-            Modifier.size(44.dp).clip(RoundedCornerShape(12.dp)).background(Orange),
-            contentAlignment = Alignment.Center
-        ) { Text("SB", color = Color.Black, style = MaterialTheme.typography.titleMedium) }
-        Spacer(Modifier.height(18.dp))
+        // A arte do ícone tem margem transparente: por isso a imagem é maior que o logo visível
+        Image(painterResource(R.mipmap.ic_launcher_foreground), contentDescription = "StreamBox", modifier = Modifier.size(76.dp))
+        Spacer(Modifier.height(4.dp))
         items.forEach { t ->
             val selected = t.route.key == selectedKey
             val shape = RoundedCornerShape(14.dp)
@@ -184,7 +203,7 @@ private fun SideRail(items: List<TopItem>, selectedKey: String, onSelect: (Route
                     .padding(vertical = 10.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                Icon(t.icon, contentDescription = t.label, tint = if (selected) Orange else TextMain, modifier = Modifier.size(26.dp))
+                BadgedIcon(t.icon, t.label, t.badge, tint = if (selected) Orange else TextMain, modifier = Modifier.size(26.dp))
                 Spacer(Modifier.height(4.dp))
                 Text(
                     t.label, style = MaterialTheme.typography.labelMedium,

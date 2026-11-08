@@ -2,7 +2,10 @@ package com.pecbox.streambox.ui
 
 import android.content.Context
 import android.widget.Toast
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.setValue
 import com.pecbox.streambox.App
 import com.pecbox.streambox.data.Item
 import com.pecbox.streambox.data.friendly
@@ -15,6 +18,9 @@ object Watched {
     private val overrides = mutableStateMapOf<String, Boolean>()
 
     fun isPlayed(item: Item): Boolean = overrides[item.id] ?: (item.userData?.played == true)
+
+    /** O player terminou este item: some das fileiras na hora, antes de o servidor confirmar. */
+    fun markLocal(id: String) { overrides[id] = true }
 
     /**
      * Marca/desmarca [item]. [children] são itens já exibidos que mudam junto
@@ -38,4 +44,15 @@ object Watched {
 
     suspend fun toggle(ctx: Context, item: Item, children: List<Item> = emptyList()): Boolean? =
         set(ctx, item, !isPlayed(item), children)
+}
+
+/** Avisa as telas quando o player fecha, para recarregarem "Continuar" e "Próximos episódios". */
+object PlaybackEvents {
+    var version by mutableIntStateOf(0)
+        private set
+
+    fun playerClosed() {
+        MemCache.map.keys.removeAll { !it.startsWith("live") }
+        version++
+    }
 }

@@ -16,8 +16,8 @@ android {
         applicationId = "com.pecbox.streambox"
         minSdk = 23
         targetSdk = 35
-        versionCode = 24
-        versionName = "0.7.9"
+        versionCode = 27
+        versionName = "0.7.12"
     }
 
     /*
@@ -37,6 +37,8 @@ android {
             // Contato mostrado no login para quem não tem conta (WhatsApp, com DDI)
             buildConfigField("String", "ADMIN_WHATSAPP", "\"5593991807963\"")
             buildConfigField("String", "ADMIN_WHATSAPP_LABEL", "\"(93) 99180-7963\"")
+            buildConfigField("String", "UPDATE_INDEX", "\"https://midia.pecbox.com.br/downloads/files/\"")
+            buildConfigField("String", "DOWNLOAD_PAGE", "\"https://midia.pecbox.com.br/#/downloads\"")
         }
         create("comunidade") {
             dimension = "dist"
@@ -47,6 +49,8 @@ android {
             buildConfigField("boolean", "LOCK_SERVER", "false")
             buildConfigField("String", "ADMIN_WHATSAPP", "\"\"")
             buildConfigField("String", "ADMIN_WHATSAPP_LABEL", "\"\"")
+            buildConfigField("String", "UPDATE_INDEX", "\"https://midia.pecbox.com.br/downloads/files/comunidade/\"")
+            buildConfigField("String", "DOWNLOAD_PAGE", "\"https://midia.pecbox.com.br/#/downloads?p=comunidade\"")
         }
     }
 
