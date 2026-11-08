@@ -52,6 +52,7 @@ import com.pecbox.streambox.App
 import com.pecbox.streambox.R
 import com.pecbox.streambox.data.SubtitleStyle
 import com.pecbox.streambox.data.MediaSource
+import com.pecbox.streambox.data.PlaybackInfo
 import com.pecbox.streambox.data.MediaStream
 import com.pecbox.streambox.data.Item
 import com.pecbox.streambox.data.MediaSegment
@@ -158,6 +159,8 @@ class PlayerActivity : ComponentActivity() {
     private var currentIsHls = false
     private var source: MediaSource? = null // faixas do Jellyfin (legendas, áudio)
     private var liveStreamId: String? = null
+    private var liveTune = 0                       // muda a cada sintonia: identifica respostas atrasadas
+    private var liveReported: String? = null       // canal do Jellyfin informado como "em reprodução"
     private var externalSub: MediaStream? = null // legenda do Jellyfin carregada como arquivo VTT
     private var audioIndex: Int? = null
     private var savedSub: TrackChoice? = null // legenda lembrada de episódios anteriores
@@ -389,24 +392,57 @@ class PlayerActivity : ComponentActivity() {
 
     private fun startJellyfinLive() {
         val id = itemId ?: return
-        lifecycleScope.launch {
-            try {
-                val info = jf.playbackInfo(id, live = true)
-                val src = info.sources.firstOrNull() ?: throw IllegalStateException("Canal sem fonte")
-                source = src
-                liveStreamId = src.liveStreamId
-                val transcode = src.transcodingUrl
-                val path = src.path
-                when {
-                    transcode != null -> { method = "Transcode"; load(jf.absolute(transcode), 0, hls = true) }
-                    src.isRemote && path != null && path.startsWith("http") -> load(path, 0, hls = path.contains(".m3u8"))
-                    else -> load(jf.directStreamUrl(id), 0, hls = false)
-                }
-            } catch (e: Exception) {
-                Toast.makeText(this@PlayerActivity, "Canal indisponível: ${e.friendly()}", Toast.LENGTH_LONG).show()
-                if (LiveQueue.entries.size < 2) finish()     // com outros canais, fica para o usuário trocar
-            }
+        val tune = ++liveTune
+        // Fora do ciclo da tela: mesmo que o usuário saia, a resposta precisa chegar para fechar o tuner
+        App.scope.launch {
+            val opened = runCatching { jf.playbackInfo(id, live = true) }
+            withContext(Dispatchers.Main) { onLiveOpened(id, tune, opened) }
         }
+    }
+
+    private fun onLiveOpened(id: String, tune: Int, opened: Result<PlaybackInfo>) {
+        if (tune != liveTune) {     // já trocou de canal ou saiu: cada abertura soma um consumidor no Jellyfin
+            opened.getOrNull()?.sources?.firstOrNull()?.liveStreamId?.let(::closeLive)
+            return
+        }
+        try {
+            val src = opened.getOrThrow().sources.firstOrNull() ?: throw IllegalStateException("Canal sem fonte")
+            source = src
+            liveStreamId = src.liveStreamId
+            val transcode = src.transcodingUrl
+            val path = src.path
+            method = if (transcode != null) "Transcode" else "DirectStream"
+            when {
+                transcode != null -> load(jf.absolute(transcode), 0, hls = true)
+                src.isRemote && path != null && path.startsWith("http") -> load(path, 0, hls = path.contains(".m3u8"))
+                else -> load(jf.directStreamUrl(id), 0, hls = false)
+            }
+        } catch (e: Exception) {
+            Toast.makeText(this, "Canal indisponível: ${e.friendly()}", Toast.LENGTH_LONG).show()
+            if (LiveQueue.entries.size < 2) finish()     // com outros canais, fica para o usuário trocar
+        }
+    }
+
+    private fun closeLive(live: String) {
+        App.scope.launch { runCatching { jf.closeLiveStream(live) } }
+    }
+
+    /** Informa o canal ao Jellyfin; sem isso, quem assiste ao vivo não aparece nas Sessões. */
+    private fun reportLiveStart() {
+        val id = itemId ?: return
+        if (!jfLive || liveReported == id) return
+        liveReported = id
+        report { reported, ticks, _ -> jf.reportStart(reported, ticks, method, playSession) }
+        handler.removeCallbacks(progressTask)
+        handler.postDelayed(progressTask, 10_000)
+    }
+
+    private fun reportLiveStop() {
+        val id = liveReported ?: return
+        liveReported = null
+        handler.removeCallbacks(progressTask)
+        val playMethod = method
+        App.scope.launch { runCatching { jf.reportStopped(id, 0L, playMethod, playSession) } }
     }
 
     private fun load(url: String, positionMs: Long, hls: Boolean) {
@@ -518,12 +554,15 @@ class PlayerActivity : ComponentActivity() {
                     handler.removeCallbacks(stallTask)
                     handler.postDelayed(stallTask, 15_000)
                 }
-                Player.STATE_READY -> if (!started) {
-                    started = true
-                    if (!isLive) {
-                        report { id, ticks, _ -> jf.reportStart(id, ticks, method, playSession) }
-                        handler.postDelayed(progressTask, 10_000)
-                        peekLogo(view.controllerShowTimeoutMs.toLong())
+                Player.STATE_READY -> {
+                    reportLiveStart()
+                    if (!started) {
+                        started = true
+                        if (!isLive) {
+                            report { id, ticks, _ -> jf.reportStart(id, ticks, method, playSession) }
+                            handler.postDelayed(progressTask, 10_000)
+                            peekLogo(view.controllerShowTimeoutMs.toLong())
+                        }
                     }
                 }
                 Player.STATE_ENDED -> if (!isLive) {
@@ -603,7 +642,7 @@ class PlayerActivity : ComponentActivity() {
     private fun report(block: suspend (id: String, ticks: Long, paused: Boolean) -> Unit) {
         val p = player ?: return
         val id = itemId ?: return
-        val ticks = p.currentPosition * TICKS_PER_MS
+        val ticks = if (isLive) 0L else p.currentPosition * TICKS_PER_MS
         val paused = !p.isPlaying
         App.scope.launch { runCatching { block(id, ticks, paused) } }
     }
@@ -1328,7 +1367,9 @@ class PlayerActivity : ComponentActivity() {
         if (chIndex >= 0) lastChIndex = chIndex
         chIndex = index
         // encerra a transmissão anterior no Jellyfin e zera o estado de reconexão
-        liveStreamId?.let { live -> App.scope.launch { runCatching { jf.closeLiveStream(live) } } }
+        liveTune++
+        reportLiveStop()
+        liveStreamId?.let(::closeLive)
         liveStreamId = null
         handler.removeCallbacks(stallTask)
         reconnects = 0; reconnectPending = false; userPaused = false; frozenMs = 0
@@ -1873,7 +1914,9 @@ class PlayerActivity : ComponentActivity() {
                 withContext(Dispatchers.Main) { PlaybackEvents.playerClosed() }
             }
         }
-        liveStreamId?.let { live -> App.scope.launch { runCatching { jf.closeLiveStream(live) } } }
+        liveTune++
+        reportLiveStop()
+        liveStreamId?.let(::closeLive)
         p.removeListener(listener)
         p.release()
         player = null
