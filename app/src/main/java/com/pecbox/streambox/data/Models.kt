@@ -132,6 +132,7 @@ data class MediaStream(
     @SerialName("IsTextSubtitleStream") val isText: Boolean = false,
     @SerialName("Height") val height: Int? = null,
     @SerialName("Width") val width: Int? = null,
+    @SerialName("Channels") val channels: Int? = null,
 ) {
     val label: String get() = displayTitle ?: title ?: language ?: "Faixa $index"
 }
@@ -155,6 +156,7 @@ data class MediaSource(
     @SerialName("TranscodingUrl") val transcodingUrl: String? = null,
     @SerialName("LiveStreamId") val liveStreamId: String? = null,
     @SerialName("Container") val container: String? = null,
+    @SerialName("Bitrate") val bitrate: Int? = null,
     @SerialName("MediaStreams") val streams: List<MediaStream> = emptyList(),
 ) {
     val subtitles get() = streams.filter { it.type == "Subtitle" }

@@ -57,6 +57,7 @@ import com.pecbox.streambox.data.Item
 import com.pecbox.streambox.data.MediaSegment
 import com.pecbox.streambox.data.TrackChoice
 import android.content.Intent
+import android.media.AudioManager
 import com.pecbox.streambox.data.friendly
 import kotlinx.coroutines.delay
 import android.view.FocusFinder
@@ -101,6 +102,14 @@ class PlayerActivity : ComponentActivity() {
             Triple("480p · 1,5 Mbps", 1_500_000, 480),
             Triple("360p · 700 kbps", 700_000, 360),
         )
+
+        /** Novas tentativas no mesmo endereço, após falha de rede, antes de recorrer à conversão. */
+        private const val MAX_NETWORK_RETRIES = 3
+
+        // Limites da conversão em "Original": o alvo acompanha o bitrate do arquivo
+        private const val CONVERSION_MIN_BITRATE = 8_000_000
+        private const val CONVERSION_DEFAULT_BITRATE = 20_000_000
+        private const val CONVERSION_MAX_BITRATE = 40_000_000
     }
 
     private val session get() = App.session
@@ -118,6 +127,7 @@ class PlayerActivity : ComponentActivity() {
 
     private var method = "DirectStream"
     private var triedHls = false
+    private var networkRetries = 0
     private var started = false
     private var reconnects = 0                 // TV ao vivo: tentativas seguidas de reconexão
     private val stallTask = Runnable { if (isLive && player?.playbackState == Player.STATE_BUFFERING) reconnect("O canal parou de responder") }
@@ -341,8 +351,7 @@ class PlayerActivity : ComponentActivity() {
             load(jf.directStreamUrl(id), startMs, hls = false)
         } else {
             method = "Transcode"
-            val q = QUALITIES[quality]
-            load(jf.hlsUrl(id, playSession, q.second, q.third), startMs, hls = true)
+            load(conversionUrl(id), startMs, hls = true)
         }
         // Faixas e legendas em segundo plano (não atrasa o início)
         lifecycleScope.launch {
@@ -387,11 +396,14 @@ class PlayerActivity : ComponentActivity() {
                 source = src
                 liveStreamId = src.liveStreamId
                 val transcode = src.transcodingUrl
-                val path = src.path
-                when {
-                    transcode != null -> { method = "Transcode"; load(jf.absolute(transcode), 0, hls = true) }
-                    src.isRemote && path != null && path.startsWith("http") -> load(path, 0, hls = path.contains(".m3u8"))
-                    else -> load(jf.directStreamUrl(id), 0, hls = false)
+                val remote = src.path?.takeIf { src.isRemote && it.startsWith("http") }
+                // Fonte direta primeiro: a conversão só quando o servidor diz que o direto não serve
+                if (transcode != null && !src.supportsDirectPlay && !src.supportsDirectStream) {
+                    method = "Transcode"
+                    load(jf.absolute(transcode), 0, hls = true)
+                } else {
+                    method = "DirectStream"
+                    load(remote ?: jf.directStreamUrl(id, src.id, src.liveStreamId), 0, hls = remote?.contains(".m3u8") == true)
                 }
             } catch (e: Exception) {
                 Toast.makeText(this@PlayerActivity, "Canal indisponível: ${e.friendly()}", Toast.LENGTH_LONG).show()
@@ -404,6 +416,7 @@ class PlayerActivity : ComponentActivity() {
         val p = player ?: return
         subRestored = false      // faixas novas: legenda e áudio lembrados precisam ser aplicados de novo
         audioRestored = false
+        networkRetries = 0
         currentUrl = url
         currentIsHls = hls
         val builder = MediaItem.Builder()
@@ -434,16 +447,77 @@ class PlayerActivity : ComponentActivity() {
     private fun reload() {
         val id = itemId ?: return
         val pos = player?.currentPosition ?: 0
-        val q = QUALITIES[quality]
-        if (q.second == 0 && !triedHls) {
+        if (QUALITIES[quality].second == 0 && !triedHls) {
             method = "DirectStream"
             load(jf.directStreamUrl(id), pos, hls = false)
         } else {
             method = "Transcode"
-            val bitrate = if (q.second == 0) 20_000_000 else q.second
-            load(jf.hlsUrl(id, playSession, bitrate, q.third, audioIndex), pos, hls = true)
+            load(conversionUrl(id), pos, hls = true)
         }
     }
+
+    /** Endereço da conversão na qualidade escolhida; em "Original", o mais fiel possível ao arquivo. */
+    private fun conversionUrl(id: String): String {
+        val q = QUALITIES[quality]
+        return if (q.second != 0) jf.hlsUrl(id, playSession, q.second, q.third, audioIndex)
+        else jf.hlsUrl(id, playSession, originalBitrate(), audioIndex = audioIndex, maxAudioChannels = conversionChannels())
+    }
+
+    /** Bitrate da conversão em "Original". H.264 precisa de mais bits que HEVC/AV1/VP9 para a mesma imagem. */
+    private fun originalBitrate(): Int {
+        val src = source
+        val bits = src?.bitrate ?: 0
+        if (bits <= 0) return if ((src?.videoHeight ?: 0) > 1080) CONVERSION_MAX_BITRATE else CONVERSION_DEFAULT_BITRATE
+        val codec = src?.streams?.firstOrNull { it.type == "Video" }?.codec?.lowercase()
+        val factor = if (codec == "h264" || codec == "avc") 1.0 else 1.5
+        return (bits * factor).toInt().coerceIn(CONVERSION_MIN_BITRATE, CONVERSION_MAX_BITRATE)
+    }
+
+    /** Mantém o 5.1 quando a faixa tem e a saída de áudio do aparelho aceita. */
+    private fun conversionChannels(): Int {
+        val streams = source?.streams?.filter { it.type == "Audio" }.orEmpty()
+        val audio = streams.firstOrNull { it.index == audioIndex } ?: streams.firstOrNull { it.isDefault } ?: streams.firstOrNull()
+        val channels = audio?.channels ?: 2
+        val surround = getSystemService(AudioManager::class.java)
+            .getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+            .any { device -> device.channelCounts.any { it >= 6 } }
+        return if (channels > 2 && surround) minOf(channels, 6) else 2
+    }
+
+    /** Passa a tocar pela conversão do servidor, do mesmo ponto. Devolve false se não há para onde recorrer. */
+    private fun fallbackToConversion(): Boolean {
+        val p = player ?: return false
+        val id = itemId ?: return false
+        if (triedHls || currentIsHls || externalUrl != null) return false
+        triedHls = true
+        method = "Transcode"
+        val pos = if (jfLive) 0L else p.currentPosition.coerceAtLeast(intent.getLongExtra(EXTRA_START_TICKS, 0L) / TICKS_PER_MS)
+        Toast.makeText(this, "Convertendo no servidor…", Toast.LENGTH_SHORT).show()
+        p.stop()
+        val live = source.takeIf { jfLive }
+        if (live != null) {
+            val url = live.transcodingUrl?.let { jf.absolute(it) }
+                ?: jf.hlsUrl(id, playSession, originalBitrate(), mediaSourceId = live.id, liveStreamId = live.liveStreamId)
+            load(url, pos, hls = true)
+            return true
+        }
+        lifecycleScope.launch {
+            // o erro pode chegar antes das informações do arquivo, e o alvo da conversão depende delas
+            if (source == null) source = runCatching { jf.playbackInfo(id).sources.firstOrNull() }.getOrNull()
+            load(conversionUrl(id), pos, hls = true)
+        }
+        return true
+    }
+
+    /** O arquivo abriu, mas nenhuma faixa de vídeo (ou de áudio) dele toca aqui: o ExoPlayer não acusa erro nesse caso. */
+    private fun convertIfUnsupported(tracks: Tracks): Boolean {
+        val missing = listOf(C.TRACK_TYPE_VIDEO, C.TRACK_TYPE_AUDIO)
+            .any { tracks.containsType(it) && !tracks.isTypeSupported(it, true) }
+        return missing && fallbackToConversion()
+    }
+
+    /** Erro do próprio formato (leitura, decodificação ou saída de áudio): repetir o mesmo arquivo não resolve. */
+    private fun isFormatError(code: Int) = code in 3000..5999
 
     /* ---------------------------- eventos ---------------------------- */
 
@@ -486,14 +560,16 @@ class PlayerActivity : ComponentActivity() {
             updateLogo()
         }
 
-        override fun onTracksChanged(tracks: Tracks) = restoreTracks()
+        override fun onTracksChanged(tracks: Tracks) {
+            if (!convertIfUnsupported(tracks)) restoreTracks()
+        }
 
         override fun onCues(cueGroup: CueGroup) {
             if (::outlineSubs.isInitialized) outlineSubs.setCues(cueGroup.cues)
         }
 
         override fun onIsPlayingChanged(isPlaying: Boolean) {
-            if (isPlaying) { reconnects = 0; handler.removeCallbacks(stallTask) }
+            if (isPlaying) { reconnects = 0; networkRetries = 0; handler.removeCallbacks(stallTask) }
             if (started && !isLive) report { id, ticks, paused -> jf.reportProgress(id, ticks, paused, method, playSession) }
         }
 
@@ -504,17 +580,20 @@ class PlayerActivity : ComponentActivity() {
                 p.prepare()
                 return
             }
-            if (isLive) { reconnect(error.errorCodeName); return }
-            val id = itemId
-            if (!isLive && id != null && !triedHls && !currentIsHls) {
-                // Formato não suportado pelo aparelho: pede conversão ao servidor e continua do mesmo ponto.
-                triedHls = true
-                method = "Transcode"
-                val pos = p.currentPosition.coerceAtLeast(intent.getLongExtra(EXTRA_START_TICKS, 0L) / TICKS_PER_MS)
-                Toast.makeText(this@PlayerActivity, "Convertendo no servidor…", Toast.LENGTH_SHORT).show()
-                val q = QUALITIES[quality]
-                load(jf.hlsUrl(id, playSession, if (q.second == 0) 20_000_000 else q.second, q.third, audioIndex), pos, hls = true)
-            } else {
+            val formatError = isFormatError(error.errorCode)
+            if (isLive) {
+                if (!(formatError && fallbackToConversion())) reconnect(error.errorCodeName)
+                return
+            }
+            if (!formatError && networkRetries < MAX_NETWORK_RETRIES) {
+                // Falha de rede: insiste na mesma fonte (1 s, 2 s, 4 s) antes de pedir conversão
+                val delayMs = 1000L shl networkRetries
+                networkRetries++
+                Toast.makeText(this@PlayerActivity, "Conexão instável. Tentando de novo…", Toast.LENGTH_SHORT).show()
+                handler.postDelayed({ player?.prepare() }, delayMs)
+                return
+            }
+            if (!fallbackToConversion()) {
                 Toast.makeText(this@PlayerActivity, "Não foi possível reproduzir: ${error.errorCodeName}", Toast.LENGTH_LONG).show()
                 finish()
             }
@@ -744,8 +823,10 @@ class PlayerActivity : ComponentActivity() {
     }
 
     private fun showQuality() {
-        choose("Qualidade", QUALITIES.map { it.first }, quality) { i ->
-            if (i == quality) return@choose
+        // Em "Original" caindo na conversão, nada fica marcado e dá para pedir o arquivo original de novo
+        val converting = quality == 0 && currentIsHls
+        choose("Qualidade", QUALITIES.map { it.first }, if (converting) -1 else quality) { i ->
+            if (i == quality && !converting) return@choose
             quality = i
             session.maxBitrate = QUALITIES[i].second
             if (i == 0) triedHls = false
@@ -1265,6 +1346,7 @@ class PlayerActivity : ComponentActivity() {
         liveStreamId = null
         handler.removeCallbacks(stallTask)
         reconnects = 0; reconnectPending = false; userPaused = false; frozenMs = 0
+        triedHls = false; method = "DirectStream"
         title = ch.name
         p.stop()
         applyHeaders(ch.userAgent, ch.referer)
