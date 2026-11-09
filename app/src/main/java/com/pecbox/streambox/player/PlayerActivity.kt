@@ -350,15 +350,12 @@ class PlayerActivity : ComponentActivity() {
         val startMs = intent.getLongExtra(EXTRA_START_TICKS, 0L) / TICKS_PER_MS
         val pref = session.maxBitrate
         quality = QUALITIES.indexOfFirst { it.second == pref }.coerceAtLeast(0)
-        if (quality == 0) {
-            load(jf.directStreamUrl(id), startMs, hls = false)
-        } else {
-            method = "Transcode"
-            load(conversionUrl(id), startMs, hls = true)
-        }
-        // Faixas e legendas em segundo plano (não atrasa o início)
+        val direct = quality == 0
+        if (direct) load(jf.directStreamUrl(id), startMs, hls = false) else method = "Transcode"
+        // Faixas e legendas em segundo plano (não atrasa o início da reprodução direta)
         lifecycleScope.launch {
             source = runCatching { jf.playbackInfo(id).sources.firstOrNull() }.getOrNull()
+            if (!direct) load(conversionUrl(id), startMs, hls = true)
             restoreTracks()
         }
         // Abertura, créditos e próximo episódio (também em segundo plano)
@@ -485,8 +482,19 @@ class PlayerActivity : ComponentActivity() {
             load(jf.directStreamUrl(id), pos, hls = false)
         } else {
             method = "Transcode"
-            load(conversionUrl(id), pos, hls = true)
+            lifecycleScope.launch {
+                ensureAnalyzed(id)
+                load(conversionUrl(id), pos, hls = true)
+            }
         }
+    }
+
+    /**
+     * O Jellyfin só analisa um .strm durante o PlaybackInfo. Conversão pedida antes disso sai sem codec definido
+     * e sem aceleração de hardware, ocupando a CPU inteira do servidor.
+     */
+    private suspend fun ensureAnalyzed(id: String) {
+        if (source?.streams.isNullOrEmpty()) source = runCatching { jf.playbackInfo(id).sources.firstOrNull() }.getOrNull() ?: source
     }
 
     /** Endereço da conversão na qualidade escolhida; em "Original", o mais fiel possível ao arquivo. */
@@ -529,7 +537,7 @@ class PlayerActivity : ComponentActivity() {
         p.stop()
         lifecycleScope.launch {
             // o erro pode chegar antes das informações do arquivo, e o alvo da conversão depende delas
-            if (source == null) source = runCatching { jf.playbackInfo(id).sources.firstOrNull() }.getOrNull()
+            ensureAnalyzed(id)
             load(conversionUrl(id), pos, hls = true)
         }
         return true
