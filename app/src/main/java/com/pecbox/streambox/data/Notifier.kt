@@ -201,10 +201,11 @@ object Notifier {
     private suspend fun checkUpdate() {
         lastUpdateCheck = System.currentTimeMillis()
         val listing = s.http.fetch(Request.Builder().url(BuildConfig.UPDATE_INDEX).build())
-        val newest = Regex("""StreamBox(?:-Comunidade)?-(\d+(?:\.\d+)+)\.apk""").findAll(listing)
-            .map { it.groupValues[1] }.maxWithOrNull(::compareVersions) ?: return
+        val file = AppUpdate.FILE_NAME.findAll(listing)
+            .maxWithOrNull { a, b -> compareVersions(a.groupValues[1], b.groupValues[1]) } ?: return
+        val newest = file.groupValues[1]
         if (compareVersions(newest, BuildConfig.VERSION_NAME) <= 0 || newest == s.updateNotified) return
         s.updateNotified = newest
-        post(Notice.UPDATE, "Nova versão disponível", "StreamBox $newest já está na página de downloads.", url = BuildConfig.DOWNLOAD_PAGE)
+        post(Notice.UPDATE, "Nova versão disponível", "StreamBox $newest está pronto. Toque para baixar e instalar.", url = BuildConfig.UPDATE_INDEX + file.value)
     }
 }

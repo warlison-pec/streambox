@@ -26,6 +26,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import com.pecbox.streambox.data.AppUpdate
 import com.pecbox.streambox.data.Notice
 import com.pecbox.streambox.ui.Nav
 import com.pecbox.streambox.ui.Notices
@@ -46,7 +47,10 @@ fun NoticesScreen(nav: Nav) {
 
     fun open(n: Notice) {
         n.itemId?.let { nav.push(Route.Details(it)); return }
-        n.url?.let { url -> runCatching { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) } }
+        n.url?.let { url ->
+            if (AppUpdate.isUpdateUrl(url)) AppUpdate.start(ctx, url)
+            else runCatching { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
+        }
     }
 
     LazyColumn(
@@ -71,7 +75,8 @@ fun NoticesScreen(nav: Nav) {
                 Icon(noticeIcon(n.kind), contentDescription = null, tint = Orange, modifier = Modifier.size(24.dp))
                 Column(Modifier.weight(1f)) {
                     Text(n.title, color = TextMain, style = MaterialTheme.typography.titleSmall)
-                    if (n.text.isNotBlank()) Text(n.text, color = TextMuted, style = MaterialTheme.typography.bodyMedium)
+                    val text = AppUpdate.status?.takeIf { AppUpdate.isUpdateUrl(n.url) } ?: n.text
+                    if (text.isNotBlank()) Text(text, color = TextMuted, style = MaterialTheme.typography.bodyMedium)
                 }
                 Text(DateUtils.getRelativeTimeSpanString(n.time).toString(), color = TextMuted, style = MaterialTheme.typography.labelSmall)
             }

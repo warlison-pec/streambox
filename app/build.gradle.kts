@@ -16,8 +16,8 @@ android {
         applicationId = "com.pecbox.streambox"
         minSdk = 23
         targetSdk = 35
-        versionCode = 31
-        versionName = "0.7.16"
+        versionCode = 32
+        versionName = "0.7.17"
     }
 
     /*
