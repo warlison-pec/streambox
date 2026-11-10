@@ -36,6 +36,10 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.Tracks
+import androidx.media3.common.VideoSize
+import android.app.UiModeManager
+import android.content.pm.ActivityInfo
+import android.content.res.Configuration
 import androidx.media3.common.text.CueGroup
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.common.util.Util
@@ -45,6 +49,7 @@ import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.CaptionStyleCompat
 import androidx.media3.ui.PlayerView
 import androidx.media3.ui.SubtitleView
@@ -112,6 +117,9 @@ class PlayerActivity : ComponentActivity() {
         private const val MAX_SOURCE_SWAPS = 2
         private const val SOURCE_SWAP_TIMEOUT_MS = 16_000L
 
+        /** Reprodução direta que não começa nesse tempo conta como falha (o aparelho pode travar sem acusar erro). */
+        private const val START_TIMEOUT_MS = 20_000L
+
         /** Nomes usados pelo indexador para os codecs de vídeo que o aparelho recusou. */
         private val INDEXER_CODECS = mapOf(
             "video/avc" to "h264", "video/hevc" to "hevc", "video/av01" to "av1", "video/x-vnd.on2.vp9" to "vp9",
@@ -146,6 +154,13 @@ class PlayerActivity : ComponentActivity() {
     private var started = false
     private var reconnects = 0                 // TV ao vivo: tentativas seguidas de reconexão
     private val stallTask = Runnable { if (isLive && player?.playbackState == Player.STATE_BUFFERING) reconnect("O canal parou de responder") }
+    private var loadReady = false              // o endereço carregado por último já começou a tocar
+    private val startTimeout = Runnable { if (!loadReady && !isLive && !currentIsHls) tryOtherSource() }
+    private var verticalMode = false           // botão "Vertical": retrato + vídeo ampliado
+    private var lastVideoSize: VideoSize? = null
+    private val isTvDevice by lazy {
+        (getSystemService(UI_MODE_SERVICE) as UiModeManager).currentModeType == Configuration.UI_MODE_TYPE_TELEVISION
+    }
     private var userPaused = false             // pausa pedida pelo usuário: a única que o ao vivo respeita
     private var reconnectPending = false
     private var lastPos = -1L
@@ -376,6 +391,10 @@ class PlayerActivity : ComponentActivity() {
         lifecycleScope.launch {
             val item = runCatching { jf.item(id) }.getOrNull() ?: return@launch
             current = item
+            if (!isTvDevice && session.verticalVideo(item.seriesId ?: item.id)) {
+                verticalMode = true
+                applyVertical()
+            }
             setLogo(jf.logoImage(item))
             if (!subPicked) savedSub = session.trackChoice("sub", item.seriesId)
             if (!audioPicked) savedAudio = session.trackChoice("audio", item.seriesId) ?: TrackChoice(language = session.audioLang)
@@ -463,6 +482,9 @@ class PlayerActivity : ComponentActivity() {
         networkRetries = 0
         currentUrl = url
         currentIsHls = hls
+        loadReady = false
+        handler.removeCallbacks(startTimeout)
+        if (!hls && !isLive) handler.postDelayed(startTimeout, START_TIMEOUT_MS)
         val builder = MediaItem.Builder()
             .setUri(url)
             .setMediaMetadata(MediaMetadata.Builder().setTitle(title).build())
@@ -613,7 +635,43 @@ class PlayerActivity : ComponentActivity() {
 
     /* ---------------------------- eventos ---------------------------- */
 
+    /**
+     * Celular/tablet: vídeo vertical gira a tela para retrato e o horizontal volta para paisagem.
+     * Na TV a tela não gira: o vídeo vertical aparece inteiro, com faixas nas laterais.
+     */
+    private fun fitOrientation(size: VideoSize) {
+        if (size.width > 0 && size.height > 0) lastVideoSize = size
+        if (isTvDevice || verticalMode || size.width == 0 || size.height == 0) return
+        val vertical = size.height > size.width * size.pixelWidthHeightRatio
+        val wanted = if (vertical) ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT else ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        if (requestedOrientation != wanted) requestedOrientation = wanted
+    }
+
+    /**
+     * Botão "Vertical" (celular): vídeo horizontal com a cena vertical no meio, entre faixas pretas gravadas na imagem.
+     * Gira para retrato e amplia até a altura preencher a tela; as faixas saem pelas laterais.
+     */
+    private fun toggleVertical() {
+        verticalMode = !verticalMode
+        applyVertical()
+        val key = current?.let { it.seriesId ?: it.id } ?: itemId
+        if (key != null) session.saveVerticalVideo(key, verticalMode)
+        Toast.makeText(this, if (verticalMode) "Modo vertical" else "Modo horizontal", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun applyVertical() {
+        view.resizeMode = if (verticalMode) AspectRatioFrameLayout.RESIZE_MODE_ZOOM else AspectRatioFrameLayout.RESIZE_MODE_FIT
+        if (verticalMode) {
+            requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
+        } else {
+            val size = lastVideoSize
+            if (size != null) fitOrientation(size) else requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        }
+    }
+
     private val listener = object : Player.Listener {
+        override fun onVideoSizeChanged(videoSize: VideoSize) = fitOrientation(videoSize)
+
         override fun onPlaybackStateChanged(state: Int) {
             when (state) {
                 Player.STATE_BUFFERING -> if (isLive) {
@@ -621,6 +679,8 @@ class PlayerActivity : ComponentActivity() {
                     handler.postDelayed(stallTask, 15_000)
                 }
                 Player.STATE_READY -> {
+                    loadReady = true
+                    handler.removeCallbacks(startTimeout)
                     reportLiveStart()
                     if (!started) {
                         started = true
@@ -724,6 +784,7 @@ class PlayerActivity : ComponentActivity() {
             add(iconButton(R.drawable.ic_sb_subtitles, "Legendas") { showSubtitles() })
             add(iconButton(R.drawable.ic_sb_audio, "Áudio") { showAudio() })
             if (!isLive) add(iconButton(R.drawable.ic_sb_hd, "Qualidade") { showQuality() })
+            if (!isTvDevice) add(iconButton(R.drawable.ic_sb_vertical, "Vertical") { toggleVertical() })
         }
         val basicId = resources.getIdentifier("exo_basic_controls", "id", packageName)
         val basic: ViewGroup? = if (basicId != 0) view.findViewById(basicId) else null
@@ -734,8 +795,7 @@ class PlayerActivity : ComponentActivity() {
         }
         // Celular/tablet: "voltar" no canto superior esquerdo (e, na TV ao vivo, a lista de canais).
         // Na TV o controle remoto já tem o botão voltar.
-        val tvBox = (getSystemService(UI_MODE_SERVICE) as android.app.UiModeManager).currentModeType ==
-            android.content.res.Configuration.UI_MODE_TYPE_TELEVISION
+        val tvBox = isTvDevice
         val top = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             visibility = View.GONE
@@ -1952,6 +2012,7 @@ class PlayerActivity : ComponentActivity() {
         handler.removeCallbacks(progressTask)
         handler.removeCallbacks(segmentTask)
         handler.removeCallbacks(stallTask)
+        handler.removeCallbacks(startTimeout)
         handler.removeCallbacks(liveWatchdog)
         handler.removeCallbacks(seekCommit)
         handler.removeCallbacks(hideOsd)

@@ -121,6 +121,12 @@ class Session(context: Context) {
         get() = prefs.getInt("screensaver_min", 5)
         set(v) = prefs.edit().putInt("screensaver_min", v).apply()
 
+    /** Modo vertical do player no celular (gira para retrato e amplia), lembrado por série ou filme. */
+    fun verticalVideo(key: String): Boolean = prefs.getBoolean("vertical_$key", false)
+
+    fun saveVerticalVideo(key: String, on: Boolean) =
+        prefs.edit().apply { if (on) putBoolean("vertical_$key", true) else remove("vertical_$key") }.apply()
+
     /** Seerr/Jellyseerr (opcional). Autentica com cookie de sessão (conta Jellyfin) ou chave de API. */
     var seerrUrl: String
         get() = prefs.getString("seerr_url", "") ?: ""
