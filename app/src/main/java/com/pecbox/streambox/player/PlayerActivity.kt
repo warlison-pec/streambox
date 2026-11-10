@@ -72,6 +72,7 @@ import com.pecbox.streambox.ui.PlaybackEvents
 import com.pecbox.streambox.ui.Watched
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.launch
 import java.util.UUID
 
@@ -107,6 +108,16 @@ class PlayerActivity : ComponentActivity() {
         /** Novas tentativas no mesmo endereço, após falha de rede, antes de recorrer à conversão. */
         private const val MAX_NETWORK_RETRIES = 3
 
+        /** Outras fontes pedidas ao indexador em uma reprodução, antes de recorrer à conversão. */
+        private const val MAX_SOURCE_SWAPS = 2
+        private const val SOURCE_SWAP_TIMEOUT_MS = 16_000L
+
+        /** Nomes usados pelo indexador para os codecs de vídeo que o aparelho recusou. */
+        private val INDEXER_CODECS = mapOf(
+            "video/avc" to "h264", "video/hevc" to "hevc", "video/av01" to "av1", "video/x-vnd.on2.vp9" to "vp9",
+            "video/x-vnd.on2.vp8" to "vp8", "video/mp4v-es" to "mpeg4", "video/mpeg2" to "mpeg2", "video/wvc1" to "vc1",
+        )
+
         // Limites da conversão em "Original": o alvo acompanha o bitrate do arquivo
         private const val CONVERSION_MIN_BITRATE = 8_000_000
         private const val CONVERSION_DEFAULT_BITRATE = 20_000_000
@@ -128,6 +139,9 @@ class PlayerActivity : ComponentActivity() {
 
     private var method = "DirectStream"
     private var triedHls = false
+    private var sourceSwaps = 0
+    private var swappingSource = false
+    private var sourceSwapped = false          // o indexador trocou a fonte nesta reprodução
     private var networkRetries = 0
     private var started = false
     private var reconnects = 0                 // TV ao vivo: tentativas seguidas de reconexão
@@ -525,6 +539,40 @@ class PlayerActivity : ComponentActivity() {
         return if (channels > 2 && surround) minOf(channels, 6) else 2
     }
 
+    /**
+     * A fonte não tocou neste aparelho: pede outra ao indexador e repete a reprodução direta, do mesmo ponto.
+     * O servidor só converte quando não há outra. Devolve false se não há para onde recorrer.
+     */
+    private fun tryOtherSource(codecs: List<String> = emptyList()): Boolean {
+        val p = player ?: return false
+        val id = itemId ?: return false
+        if (triedHls || currentIsHls || isLive) return false
+        if (swappingSource) return true
+        if (!session.indexer.enabled || sourceSwaps >= MAX_SOURCE_SWAPS) return fallbackToConversion()
+        swappingSource = true
+        sourceSwaps++
+        val pos = p.currentPosition.coerceAtLeast(intent.getLongExtra(EXTRA_START_TICKS, 0L) / TICKS_PER_MS)
+        Toast.makeText(this, "Procurando outra fonte…", Toast.LENGTH_SHORT).show()
+        p.stop()
+        lifecycleScope.launch {
+            val result = withTimeoutOrNull(SOURCE_SWAP_TIMEOUT_MS) {
+                runCatching { session.indexer.nextSource(id, codecs) }.getOrNull()
+            }
+            swappingSource = false
+            if (result?.switched != true) {
+                fallbackToConversion()
+                return@launch
+            }
+            sourceSwapped = true
+            source = null
+            method = "DirectStream"
+            load(jf.directStreamUrl(id), pos, hls = false)
+            source = runCatching { jf.playbackInfo(id).sources.firstOrNull() }.getOrNull()
+            restoreTracks()
+        }
+        return true
+    }
+
     /** Passa a tocar pela conversão do servidor, do mesmo ponto. Devolve false se não há para onde recorrer. */
     private fun fallbackToConversion(): Boolean {
         val p = player ?: return false
@@ -536,6 +584,11 @@ class PlayerActivity : ComponentActivity() {
         Toast.makeText(this, "Convertendo no servidor…", Toast.LENGTH_SHORT).show()
         p.stop()
         lifecycleScope.launch {
+            if (sourceSwapped) {
+                sourceSwapped = false
+                source = null
+                runCatching { session.indexer.restoreSource(id) }
+            }
             // o erro pode chegar antes das informações do arquivo, e o alvo da conversão depende delas
             ensureAnalyzed(id)
             load(conversionUrl(id), pos, hls = true)
@@ -547,8 +600,13 @@ class PlayerActivity : ComponentActivity() {
     private fun convertIfUnsupported(tracks: Tracks): Boolean {
         val missing = listOf(C.TRACK_TYPE_VIDEO, C.TRACK_TYPE_AUDIO)
             .any { tracks.containsType(it) && !tracks.isTypeSupported(it, true) }
-        return missing && fallbackToConversion()
+        return missing && tryOtherSource(unsupportedVideoCodecs(tracks))
     }
+
+    private fun unsupportedVideoCodecs(tracks: Tracks): List<String> = tracks.groups
+        .filter { it.type == C.TRACK_TYPE_VIDEO && !it.isSupported(true) }
+        .flatMap { group -> (0 until group.length).mapNotNull { INDEXER_CODECS[group.getTrackFormat(it).sampleMimeType] } }
+        .distinct()
 
     /** Erro do próprio formato (leitura, decodificação ou saída de áudio): repetir o mesmo arquivo não resolve. */
     private fun isFormatError(code: Int) = code in 3000..5999
@@ -626,7 +684,7 @@ class PlayerActivity : ComponentActivity() {
                 handler.postDelayed({ player?.prepare() }, delayMs)
                 return
             }
-            if (!fallbackToConversion()) {
+            if (!tryOtherSource()) {
                 Toast.makeText(this@PlayerActivity, "Não foi possível reproduzir: ${error.errorCodeName}", Toast.LENGTH_LONG).show()
                 finish()
             }

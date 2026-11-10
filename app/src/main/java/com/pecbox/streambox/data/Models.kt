@@ -220,6 +220,9 @@ data class IndexerSearch(val items: List<IndexerItem> = emptyList())
 data class RequestCreated(val id: String, val state: String = "queued", val duplicate: Boolean = false)
 
 @Serializable
+data class SourceSwitch(val switched: Boolean = false, val reason: String? = null, val quality: String? = null)
+
+@Serializable
 data class RequestStatus(
     val id: String,
     val state: String,

@@ -1,7 +1,9 @@
 package com.pecbox.streambox.data
 
+import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonArray
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -40,6 +42,22 @@ class IndexerApi(private val s: Session) {
     suspend fun status(id: String): RequestStatus {
         val text = s.http.fetch(request("/status?id=$id").build())
         return AppJson.decodeFromString(RequestStatus.serializer(), text)
+    }
+
+    /** A fonte atual não tocou neste aparelho: pede ao indexador que troque por outra do mesmo conteúdo. */
+    suspend fun nextSource(itemId: String, codecs: List<String>): SourceSwitch {
+        val body = buildJsonObject {
+            put("itemId", itemId)
+            putJsonArray("codecs") { codecs.forEach { add(it) } }
+        }.toString()
+        val text = s.http.fetch(request("/source/next").post(body.toRequestBody(JSON_TYPE)).build())
+        return AppJson.decodeFromString(SourceSwitch.serializer(), text)
+    }
+
+    /** Nenhuma outra fonte tocou: volta para a original. */
+    suspend fun restoreSource(itemId: String) {
+        val body = buildJsonObject { put("itemId", itemId) }.toString()
+        s.http.fetch(request("/source/restore").post(body.toRequestBody(JSON_TYPE)).build())
     }
 
     /** Capa servida pelo indexador (caminho relativo "art/<hash>.jpg"). */
