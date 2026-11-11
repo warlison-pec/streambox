@@ -1,0 +1,43 @@
+# Instaladores .msi do StreamBox Desktop para Windows (o .msi só pode ser gerado no Windows).
+# Rodar: aba Actions -> "StreamBox Desktop (Windows)" -> Run workflow. Também roda ao criar a tag desktop-v*.
+name: StreamBox Desktop (Windows)
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["desktop-v*"]
+
+jobs:
+  msi:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        edicao: [pecbox, comunidade]
+    defaults:
+      run:
+        shell: bash
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      # libmpv (player) para Windows x86_64, compilação do projeto shinchiro/mpv-winbuild-cmake
+      - name: Baixar libmpv-2.dll
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download --repo shinchiro/mpv-winbuild-cmake --pattern 'mpv-dev-x86_64-2*.7z' --dir mpv
+          7z e mpv/*.7z -oresources/windows libmpv-2.dll -y
+          ls -la resources/windows
+
+      - name: Gerar .msi
+        run: ./gradlew --console=plain -Pedicao=${{ matrix.edicao }} packageMsi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: streambox-desktop-${{ matrix.edicao }}-windows
+          path: desktop/build/${{ matrix.edicao }}/compose/binaries/main/msi/*.msi

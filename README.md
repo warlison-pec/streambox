@@ -20,6 +20,10 @@ Cliente Android leve para Jellyfin, com **um único APK para celular e TV** (And
 | Player | Retomada, progresso enviado ao servidor a cada 10 s; botões **Legendas** (embutidas, do servidor, baixar da internet), **Áudio** e **Qualidade** (Original/1080p/720p/480p/360p); botão Menu do controle abre as opções |
 | TV ao vivo | Canais do Jellyfin (Live TV) e **Minha lista**: M3U + guia EPG/XMLTV opcionais, com grupos, "Agora/Depois" e progresso |
 
+## Windows e Linux
+
+Versão para computador (mesmo visual, player libmpv sem transcodificação, edições PecBox e Comunidade): veja [`desktop/README.md`](desktop/README.md).
+
 ## Compilar (no servidor, via Docker)
 
 ```bash

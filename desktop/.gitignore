@@ -1,0 +1,2 @@
+# libmpv do Windows: baixada pelo workflow (ou à mão), não vai para o git
+resources/windows/*.dll
