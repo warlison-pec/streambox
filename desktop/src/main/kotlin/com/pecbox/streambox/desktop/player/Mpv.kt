@@ -73,6 +73,7 @@ object MpvEvent {
     const val SHUTDOWN = 1
     const val LOG_MESSAGE = 2
     const val START_FILE = 6
+    const val CLIENT_MESSAGE = 16
     const val END_FILE = 7
     const val FILE_LOADED = 8
     const val PLAYBACK_RESTART = 21
@@ -154,6 +155,15 @@ class Mpv(private val lib: LibMpv) {
         val data = p.getPointer(16)
         return when (id) {
             MpvEvent.END_FILE -> Event(id, error, endReason = data?.getInt(0), endError = data?.getInt(4))
+            // mpv_event_client_message: int num_args; const char **args (mensagens de "script-message")
+            MpvEvent.CLIENT_MESSAGE -> Event(
+                id, error,
+                message = data?.let { d ->
+                    val n = d.getInt(0)
+                    val args = d.getPointer(Native.POINTER_SIZE.toLong())
+                    (0 until n).mapNotNull { i -> args?.getPointer(i.toLong() * Native.POINTER_SIZE)?.getString(0, "UTF-8") }
+                }
+            )
             MpvEvent.LOG_MESSAGE -> Event(
                 id, error,
                 log = data?.let {
@@ -182,5 +192,6 @@ class Mpv(private val lib: LibMpv) {
         val endReason: Int? = null,
         val endError: Int? = null,
         val log: String? = null,
+        val message: List<String>? = null,
     )
 }

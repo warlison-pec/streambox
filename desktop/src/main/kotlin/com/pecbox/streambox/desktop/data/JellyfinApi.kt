@@ -243,13 +243,41 @@ class JellyfinApi(private val s: Session) {
         return url("/Videos/$itemId/$sourceId/Subtitles/${stream.index}/0/Stream.$ext", mapOf("ApiKey" to s.token)).toString()
     }
 
+    /* ---------------- TV ao vivo ---------------- */
+
+    suspend fun liveChannels(): List<Item> = items(
+        "/LiveTv/Channels",
+        mapOf(
+            "userId" to s.userId, "addCurrentProgram" to true, "enableImages" to true,
+            "enableUserData" to false, "limit" to 1000, "fields" to "ChannelInfo"
+        )
+    ).items
+
+    fun channelLogo(channel: Item): String? =
+        channel.imageTags["Primary"]?.let { "${s.server}/Items/${channel.id}/Images/Primary?fillHeight=120&quality=90&tag=$it" }
+
+    /** Transmissão aberta pelo servidor (sintonizador). Vale enquanto o canal não for fechado. */
+    fun liveStreamUrl(channelId: String, mediaSourceId: String, liveStreamId: String?): String =
+        url(
+            "/Videos/$channelId/stream",
+            mapOf(
+                "static" to true, "mediaSourceId" to mediaSourceId, "liveStreamId" to liveStreamId,
+                "deviceId" to s.deviceId, "ApiKey" to s.token,
+            )
+        ).toString()
+
+    /** Fecha a transmissão: cada canal aberto ocupa um sintonizador/conexão no Jellyfin. */
+    suspend fun closeLiveStream(liveStreamId: String) {
+        postText("/LiveStreams/Close", "{}", mapOf("liveStreamId" to liveStreamId))
+    }
+
     /**
      * Faixas e legendas do item. O perfil diz ao servidor que este aparelho toca tudo
      * (o mpv decodifica qualquer formato), então ele nunca oferece conversão.
      */
-    suspend fun playbackInfo(itemId: String): PlaybackInfo {
+    suspend fun playbackInfo(itemId: String, live: Boolean = false): PlaybackInfo {
         val body = """
-            {"UserId":"${s.userId}","MaxStreamingBitrate":1000000000,"AutoOpenLiveStream":false,
+            {"UserId":"${s.userId}","MaxStreamingBitrate":1000000000,"AutoOpenLiveStream":$live,
              "EnableDirectPlay":true,"EnableDirectStream":true,"EnableTranscoding":false,
              "DeviceProfile":{"Name":"StreamBox Desktop (mpv)","MaxStreamingBitrate":1000000000,"MaxStaticBitrate":1000000000,
                "DirectPlayProfiles":[{"Type":"Video"},{"Type":"Audio"}],
@@ -261,30 +289,30 @@ class JellyfinApi(private val s: Session) {
                  {"Format":"srt","Method":"External"},{"Format":"ass","Method":"External"},{"Format":"ssa","Method":"External"},
                  {"Format":"vtt","Method":"External"},{"Format":"pgssub","Method":"External"}]}}
         """.trimIndent()
-        val text = postText("/Items/$itemId/PlaybackInfo", body, mapOf("userId" to s.userId))
+        val text = postText("/Items/$itemId/PlaybackInfo", body, mapOf("userId" to s.userId, "autoOpenLiveStream" to live))
         return AppJson.decodeFromString(PlaybackInfo.serializer(), text)
     }
 
-    private fun playbackBody(itemId: String, sourceId: String, positionTicks: Long, paused: Boolean, session: String): String =
+    private fun playbackBody(itemId: String, sourceId: String, positionTicks: Long, paused: Boolean, session: String, method: String = "DirectPlay"): String =
         buildJsonObject {
             put("ItemId", itemId)
             put("MediaSourceId", sourceId)
             put("PositionTicks", positionTicks)
             put("IsPaused", paused)
             put("CanSeek", true)
-            put("PlayMethod", "DirectPlay")
+            put("PlayMethod", method)
             put("PlaySessionId", session)
         }.toString()
 
-    suspend fun reportStart(itemId: String, sourceId: String, ticks: Long, session: String) {
-        postText("/Sessions/Playing", playbackBody(itemId, sourceId, ticks, false, session))
+    suspend fun reportStart(itemId: String, sourceId: String, ticks: Long, session: String, method: String = "DirectPlay") {
+        postText("/Sessions/Playing", playbackBody(itemId, sourceId, ticks, false, session, method))
     }
 
     suspend fun reportProgress(itemId: String, sourceId: String, ticks: Long, paused: Boolean, session: String) {
         postText("/Sessions/Playing/Progress", playbackBody(itemId, sourceId, ticks, paused, session))
     }
 
-    suspend fun reportStopped(itemId: String, sourceId: String, ticks: Long, session: String) {
-        postText("/Sessions/Playing/Stopped", playbackBody(itemId, sourceId, ticks, false, session))
+    suspend fun reportStopped(itemId: String, sourceId: String, ticks: Long, session: String, method: String = "DirectPlay") {
+        postText("/Sessions/Playing/Stopped", playbackBody(itemId, sourceId, ticks, false, session, method))
     }
 }

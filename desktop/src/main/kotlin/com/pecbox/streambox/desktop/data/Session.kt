@@ -81,6 +81,20 @@ class Session {
         get() = str("seerr_user")
         set(v) = put("seerr_user", v)
 
+    /** TV ao vivo externa (opcional): lista M3U e guia XMLTV. */
+    var m3uUrl: String
+        get() = str("m3u_url")
+        set(v) = put("m3u_url", v.trim())
+
+    var epgUrl: String
+        get() = str("epg_url")
+        set(v) = put("epg_url", v.trim())
+
+    /** Último canal assistido (JSON de LiveEntry), para abrir direto nele. */
+    var lastChannelJson: String
+        get() = str("live_last")
+        set(v) = put("live_last", v)
+
     /** Player abre em tela cheia. */
     var fullscreen: Boolean
         get() = prefs.getBoolean("fullscreen", true)
@@ -112,4 +126,5 @@ class Session {
     val jellyfin = JellyfinApi(this)
     val indexer = IndexerApi(this)
     val seerr = SeerrApi(this)
+    val externalTv = ExternalLiveTv(this, File(dataDir, "cache"))
 }

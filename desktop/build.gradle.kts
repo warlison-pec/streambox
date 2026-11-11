@@ -19,7 +19,7 @@ plugins {
     id("org.jetbrains.compose") version "1.7.3"
 }
 
-val appVersion = "0.1.2"
+val appVersion = "0.1.3"
 val edicao = (findProperty("edicao") as String?) ?: "pecbox"
 
 data class Edicao(
@@ -95,6 +95,7 @@ kotlin {
             "com/pecbox/streambox/desktop/**",
             "com/pecbox/streambox/data/Models.kt",
             "com/pecbox/streambox/data/Net.kt",
+            "com/pecbox/streambox/ui/ChannelGenres.kt",
         )
     }
 }
@@ -123,7 +124,7 @@ compose.desktop {
             vendor = "PecBox"
             // Bibliotecas nativas que vão junto (ex.: resources/windows/libmpv-2.dll)
             appResourcesRootDir.set(layout.projectDirectory.dir("resources"))
-            modules("java.net.http", "java.prefs", "jdk.unsupported")
+            modules("java.net.http", "java.prefs", "java.xml", "jdk.unsupported")
             linux {
                 packageName = cfg.pacote
                 menuGroup = "AudioVideo"

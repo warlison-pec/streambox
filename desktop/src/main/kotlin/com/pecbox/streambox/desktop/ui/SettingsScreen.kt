@@ -46,6 +46,7 @@ fun SettingsScreen(s: Session, logout: () -> Unit) {
         Text("Ajustes", style = MaterialTheme.typography.headlineMedium)
         Section { IndexerSettings(s) }
         Section { SeerrSettings(s) }
+        Section { LiveTvSettings(s) }
         Section { PlayerSettings(s) }
         Section {
             Text("Conta", style = MaterialTheme.typography.titleLarge)
@@ -165,6 +166,39 @@ private fun SeerrSettings(s: Session) {
         }
     }
     if (status.isNotBlank()) Text(status, color = if (ok) Success else Danger)
+}
+
+/** "Minha lista" da TV ao vivo: lista M3U e guia XMLTV (opcionais). */
+@Composable
+private fun LiveTvSettings(s: Session) {
+    var m3u by remember { mutableStateOf(s.m3uUrl) }
+    var epg by remember { mutableStateOf(s.epgUrl) }
+    var saved by remember { mutableStateOf<String?>(null) }
+    Text("TV ao vivo (Minha lista)", style = MaterialTheme.typography.titleLarge)
+    Text(
+        "Use uma lista M3U de canais que você tem direito de acessar. O guia (EPG) no formato XMLTV também é opcional (aceita .xml ou .xml.gz).",
+        color = TextMuted,
+    )
+    OutlinedTextField(
+        value = m3u, onValueChange = { m3u = it; saved = null }, singleLine = true,
+        modifier = Modifier.fillMaxWidth(), label = { Text("URL da lista M3U") },
+    )
+    OutlinedTextField(
+        value = epg, onValueChange = { epg = it; saved = null }, singleLine = true,
+        modifier = Modifier.fillMaxWidth(), label = { Text("URL do guia EPG/XMLTV (opcional)") },
+    )
+    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        SbButton("Salvar", onClick = {
+            s.m3uUrl = m3u; s.epgUrl = epg; s.externalTv.clearCache()
+            saved = if (m3u.isBlank()) "Lista removida." else "Salvo. Abra TV ao vivo → Minha lista."
+        }, icon = Icons.Filled.Check)
+        if (s.m3uUrl.isNotBlank() || m3u.isNotBlank()) {
+            SbButton("Remover", onClick = {
+                m3u = ""; epg = ""; s.m3uUrl = ""; s.epgUrl = ""; s.externalTv.clearCache(); saved = "Lista removida."
+            }, primary = false)
+        }
+    }
+    saved?.let { Text(it, color = Success) }
 }
 
 @Composable

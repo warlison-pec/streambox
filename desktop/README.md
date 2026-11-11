@@ -4,9 +4,10 @@ Cliente Jellyfin para computador com o mesmo visual do app Android (preto e lara
 toca o **arquivo original sem transcodificação**: MKV, HEVC/H.265 10 bits, AV1, VP9, DTS, TrueHD, E-AC3, legendas
 ASS/SSA com estilo completo e PGS, com decodificação por hardware quando a placa suporta.
 
-> Prova de conceito (v0.1.2). Já tem: login (usuário/senha e conexão rápida), início, bibliotecas, busca, detalhes com
+> Prova de conceito (v0.1.3). Já tem: login (usuário/senha e conexão rápida), início, bibliotecas, busca, detalhes com
 > temporadas e episódios, retomada, progresso enviado ao Jellyfin, legendas externas, próximo episódio automático,
-> busca com STRM Indexer ("Disponível para solicitar") e Seerr ("Pedir no Seerr") e Ajustes.
+> busca com STRM Indexer ("Disponível para solicitar") e Seerr ("Pedir no Seerr"), Ajustes e TV ao vivo (canais do
+> Jellyfin e "Minha lista" M3U + guia XMLTV, com troca de canal por ↑/↓ e PgUp/PgDn dentro do player).
 
 ## Duas edições, como no APK
 
@@ -36,7 +37,7 @@ para `resources/windows/` na primeira vez. Para baixar de novo: `gradlew.bat bai
 
 ```bash
 ./empacotar-linux.sh                # as duas edições -> ../dist/desktop/*.deb
-sudo apt install ./streambox_0.1.2-1_amd64.deb   # o apt instala o libmpv2 junto
+sudo apt install ./streambox_0.1.3-1_amd64.deb   # o apt instala o libmpv2 junto
 ```
 
 **Windows (.msi):** o `.msi` só pode ser gerado no Windows. O workflow `.github/workflows/desktop-windows.yml` faz
@@ -73,5 +74,5 @@ Diagnóstico sem login (testa se o libmpv carrega e decodifica um arquivo):
 1. Controles na tela com o visual do StreamBox (hoje são os controles padrão do mpv): barra laranja, menus de áudio,
    legenda e qualidade, botão "Pular abertura" e "Próximo episódio".
 2. Reorganizar em Kotlin Multiplatform (módulo `shared` com API e modelos para Android e desktop).
-3. TV ao vivo, troca de fonte .strm pelo indexador quando uma não toca, avisos e atualização automática.
+3. Troca de fonte .strm pelo indexador quando uma não toca, avisos e atualização automática.
 4. Instalador menor (ProGuard e ícones só os usados).
