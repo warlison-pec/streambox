@@ -19,7 +19,7 @@ plugins {
     id("org.jetbrains.compose") version "1.7.3"
 }
 
-val appVersion = "0.1.4"
+val appVersion = "0.1.5"
 val edicao = (findProperty("edicao") as String?) ?: "pecbox"
 
 data class Edicao(
@@ -95,6 +95,7 @@ kotlin {
             "com/pecbox/streambox/desktop/**",
             "com/pecbox/streambox/data/Models.kt",
             "com/pecbox/streambox/data/Net.kt",
+            "com/pecbox/streambox/data/SubtitleStyle.kt",
             "com/pecbox/streambox/ui/ChannelGenres.kt",
         )
     }

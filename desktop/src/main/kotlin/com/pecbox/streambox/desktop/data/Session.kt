@@ -3,7 +3,9 @@ package com.pecbox.streambox.desktop.data
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import com.pecbox.streambox.data.AppJson
 import com.pecbox.streambox.data.AuthResult
+import com.pecbox.streambox.data.TrackChoice
 import com.pecbox.streambox.desktop.BuildConfig
 import okhttp3.OkHttpClient
 import java.io.File
@@ -99,6 +101,32 @@ class Session {
     var fullscreen: Boolean
         get() = prefs.getBoolean("fullscreen", true)
         set(v) { prefs.putBoolean("fullscreen", v); runCatching { prefs.flush() } }
+
+    /** Aparência da legenda (índices de SubtitleStyle, iguais aos do app Android). */
+    var subSize: Int
+        get() = prefs.getInt("sub_size", 1)
+        set(v) { prefs.putInt("sub_size", v); runCatching { prefs.flush() } }
+
+    var subColor: Int
+        get() = prefs.getInt("sub_color", 0)
+        set(v) { prefs.putInt("sub_color", v); runCatching { prefs.flush() } }
+
+    var subBackground: Int
+        get() = prefs.getInt("sub_bg", 0)
+        set(v) { prefs.putInt("sub_bg", v); runCatching { prefs.flush() } }
+
+    /** Legenda/áudio escolhidos no player: lembrados por série (e o último, para o resto). */
+    fun trackChoice(kind: String, seriesId: String?): TrackChoice? {
+        val saved = seriesId?.let { prefs.get("${kind}_choice_$it", null) } ?: prefs.get("${kind}_choice", null)
+        return saved?.let { runCatching { AppJson.decodeFromString(TrackChoice.serializer(), it) }.getOrNull() }
+    }
+
+    fun saveTrackChoice(kind: String, seriesId: String?, choice: TrackChoice) {
+        val json = AppJson.encodeToString(TrackChoice.serializer(), choice)
+        seriesId?.let { prefs.put("${kind}_choice_$it", json) }
+        if (!choice.off) prefs.put("${kind}_choice", json)   // "Desligadas" vale só para a própria série
+        runCatching { prefs.flush() }
+    }
 
     var loggedIn by mutableStateOf(server.isNotBlank() && token.isNotBlank() && userId.isNotBlank())
         private set

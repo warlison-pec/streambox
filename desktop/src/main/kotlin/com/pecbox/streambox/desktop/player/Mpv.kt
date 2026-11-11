@@ -23,6 +23,7 @@ interface LibMpv : Library {
     fun mpv_set_property_string(ctx: Pointer, name: String, data: String): Int
     fun mpv_get_property_string(ctx: Pointer, name: String): Pointer?
     fun mpv_command(ctx: Pointer, args: Array<String?>): Int
+    fun mpv_command_async(ctx: Pointer, replyUserdata: Long, args: Array<String?>): Int
     fun mpv_request_log_messages(ctx: Pointer, minLevel: String): Int
     fun mpv_wait_event(ctx: Pointer, timeout: Double): Pointer
     fun mpv_wakeup(ctx: Pointer)
@@ -139,6 +140,11 @@ class Mpv(private val lib: LibMpv) {
 
     fun command(vararg args: String): Int = lock.read {
         if (destroyed) -1 else lib.mpv_command(ctx, arrayOf(*args, null))
+    }
+
+    /** Sem esperar o mpv (para a thread da interface não travar se ele estiver ocupado abrindo um vídeo). */
+    fun commandAsync(vararg args: String): Int = lock.read {
+        if (destroyed) -1 else lib.mpv_command_async(ctx, 0L, arrayOf(*args, null))
     }
 
     fun set(name: String, value: String): Int = lock.read {

@@ -6,12 +6,16 @@ import com.pecbox.streambox.data.AuthResult
 import com.pecbox.streambox.data.Item
 import com.pecbox.streambox.data.ItemsResult
 import com.pecbox.streambox.data.JSON_TYPE
+import com.pecbox.streambox.data.MediaSegment
+import com.pecbox.streambox.data.MediaSegmentsResult
 import com.pecbox.streambox.data.MediaStream
 import com.pecbox.streambox.data.PlaybackInfo
 import com.pecbox.streambox.data.PublicInfo
 import com.pecbox.streambox.data.QuickConnectResult
+import com.pecbox.streambox.data.RemoteSubtitle
 import com.pecbox.streambox.data.fetch
 import com.pecbox.streambox.desktop.BuildConfig
+import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import okhttp3.HttpUrl
@@ -175,6 +179,39 @@ class JellyfinApi(private val s: Session) {
             "/Shows/$seriesId/Episodes",
             mapOf("userId" to s.userId, "startItemId" to episode.id, "limit" to 2, "fields" to FIELDS)
         ).items.firstOrNull { it.id != episode.id }
+    }
+
+    /** Busca legendas na internet pelos provedores configurados no Jellyfin (ex.: OpenSubtitles). */
+    suspend fun searchSubtitles(itemId: String, lang: String): List<RemoteSubtitle> =
+        AppJson.decodeFromString(ListSerializer(RemoteSubtitle.serializer()), getText("/Items/$itemId/RemoteSearch/Subtitles/$lang"))
+
+    suspend fun downloadSubtitle(itemId: String, subtitleId: String) {
+        val encoded = java.net.URLEncoder.encode(subtitleId, "UTF-8").replace("+", "%20")
+        postText("/Items/$itemId/RemoteSearch/Subtitles/$encoded", "{}")
+    }
+
+    /**
+     * Trechos para pular (abertura, resumo, créditos…): segmentos do servidor ou, se não houver,
+     * capítulos com nomes como "Abertura", "Intro", "Créditos" (igual ao app Android).
+     */
+    suspend fun mediaSegments(itemId: String): List<MediaSegment> {
+        val fromServer = runCatching {
+            AppJson.decodeFromString(MediaSegmentsResult.serializer(), getText("/MediaSegments/$itemId")).items
+        }.getOrDefault(emptyList()).filter { it.endTicks > it.startTicks }
+        if (fromServer.isNotEmpty()) return fromServer
+        val full = runCatching { item(itemId) }.getOrNull() ?: return emptyList()
+        val intro = Regex("intro|opening|abertura|recap|resumo|^op\\b", RegexOption.IGNORE_CASE)
+        val outro = Regex("credit|cr[eé]dito|ending|encerramento|outro|^ed\\b", RegexOption.IGNORE_CASE)
+        val sorted = full.chapters.sortedBy { it.startTicks }
+        return sorted.mapIndexedNotNull { i, ch ->
+            val name = ch.name.orEmpty()
+            val end = sorted.getOrNull(i + 1)?.startTicks ?: full.runTimeTicks ?: return@mapIndexedNotNull null
+            when {
+                outro.containsMatchIn(name) -> MediaSegment("Outro", ch.startTicks, full.runTimeTicks ?: end)
+                intro.containsMatchIn(name) -> MediaSegment("Intro", ch.startTicks, end)
+                else -> null
+            }
+        }
     }
 
     suspend fun search(term: String): List<Item> = items(

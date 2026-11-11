@@ -59,9 +59,19 @@ desktop/src/main/kotlin/com/pecbox/streambox/desktop/
   abre `/Videos/{id}/stream?static=true` no mpv. Funciona também para itens `.strm`.
 - O vídeo toca dentro da janela do app, ocupando a janela inteira como no Android (opção `wid` do mpv). Os
   controles são desenhados pelo próprio mpv com `src/main/resources/streambox_osc.lua`, no visual do StreamBox:
-  voltar, título, barra laranja, ±10 s, áudio, legenda, tela cheia e, ao vivo, "AO VIVO" e troca de canal.
-  Atalhos: `Esc`/`Backspace` voltam (Esc sai da tela cheia primeiro), espaço pausa, `F`/`F11`/duplo clique tela
-  cheia, setas avançam/voltam (ao vivo ↑/↓ trocam de canal), `#` troca o áudio, `J` troca a legenda.
+  voltar, título, barra laranja (com abertura/créditos marcados), ±10 s, legendas, áudio, episódios, tela cheia e,
+  ao vivo, "AO VIVO", troca de canal e lista de canais por grupo.
+- Mouse e teclado são da janela do app, não do mpv (embutido no Windows o mpv desativa a própria janela e não recebe
+  cliques; no X11 ele roda com `input-cursor=no` para os cliques chegarem ao app). A área de vídeo repassa
+  movimento, cliques e rolagem ao script por `script-message`; o script devolve as escolhas (`sb-escolha`) e o
+  `PlayerController` monta os menus (faixas, aparência da legenda, legendas da internet, episódios, canais).
+- Como no Android: menus de legenda (desligar, faixas, baixar da internet pelo Jellyfin, aparência: tamanho, cor e
+  fundo) e de áudio em lista; a escolha é lembrada por série; "Pular abertura/resumo/créditos" e cartão de
+  "Próximo episódio" com contagem de 10 s; número do canal pelo teclado no ao vivo.
+- Mouse: clique pausa (ao vivo mostra/esconde os controles), duplo clique tela cheia, rolagem muda o volume (ou rola
+  o menu aberto). Atalhos: `Esc` fecha o menu, sai da tela cheia e depois volta; `Backspace` volta; espaço pausa;
+  `F`/`F11` tela cheia; ←/→ ±10 s; ↑/↓ ±1 min (ao vivo trocam de canal); `S`/`J` legendas; `A`/`#` áudio;
+  `E` episódios; `C` canais; `M` sem som; nos menus, setas, Enter e PgUp/PgDn.
 - No Linux com Wayland o app roda via XWayland e o mpv usa X11 para se encaixar na janela.
 - Faixas preferidas: áudio e legenda em português; a legenda não liga sozinha quando o áudio já está em português.
 - Log do player (para diagnóstico): `~/.local/share/<edição>/player.log` no Linux, `%APPDATA%\<edição>\player.log`
@@ -75,7 +85,6 @@ Diagnóstico sem login (testa se o libmpv carrega e decodifica um arquivo):
 
 ## Próximos passos
 
-1. Player: menus de áudio/legenda em lista (hoje os botões alternam), "Pular abertura" e "Próximo episódio".
-2. Reorganizar em Kotlin Multiplatform (módulo `shared` com API e modelos para Android e desktop).
-3. Troca de fonte .strm pelo indexador quando uma não toca, avisos e atualização automática.
-4. Instalador menor (ProGuard e ícones só os usados).
+1. Reorganizar em Kotlin Multiplatform (módulo `shared` com API e modelos para Android e desktop).
+2. Troca de fonte .strm pelo indexador quando uma não toca, avisos e atualização automática.
+3. Instalador menor (ProGuard e ícones só os usados).
