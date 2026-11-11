@@ -185,7 +185,12 @@ class PlayerActivity : ComponentActivity() {
     }
     private var quality = 0                 // índice em QUALITIES
     private var currentUrl = ""
-    private var currentIsHls = false
+    private var currentIsHls = false            // tocando a conversão do servidor
+    // A fonte é HLS, mas o endereço direto (/Videos/…/stream) não termina em .m3u8: o ExoPlayer decide o formato
+    // pelo endereço e só reconhece a lista se for avisado. Sem isso a reprodução direta falha e cai na conversão.
+    private var currentDirectHls = false        // reprodução direta avisando o ExoPlayer que é HLS
+    private var sourceIsHls = false             // a fonte atual é HLS (PlaybackInfo ou erro de formato)
+    private var triedDirectHls = false
     private var source: MediaSource? = null // faixas do Jellyfin (legendas, áudio)
     private var liveStreamId: String? = null
     private var liveTune = 0                       // muda a cada sintonia: identifica respostas atrasadas
@@ -384,6 +389,7 @@ class PlayerActivity : ComponentActivity() {
         // Faixas e legendas em segundo plano (não atrasa o início da reprodução direta)
         lifecycleScope.launch {
             source = runCatching { jf.playbackInfo(id).sources.firstOrNull() }.getOrNull()
+            if (isHlsSource(source)) sourceIsHls = true
             if (!direct) load(conversionUrl(id), startMs, hls = true)
             restoreTracks()
         }
@@ -475,20 +481,21 @@ class PlayerActivity : ComponentActivity() {
         App.scope.launch { runCatching { jf.reportStopped(id, 0L, playMethod, playSession) } }
     }
 
-    private fun load(url: String, positionMs: Long, hls: Boolean) {
+    private fun load(url: String, positionMs: Long, hls: Boolean, m3u8: Boolean = hls) {
         val p = player ?: return
         subRestored = false      // faixas novas: legenda e áudio lembrados precisam ser aplicados de novo
         audioRestored = false
         networkRetries = 0
         currentUrl = url
         currentIsHls = hls
+        currentDirectHls = m3u8 && !hls
         loadReady = false
         handler.removeCallbacks(startTimeout)
         if (!hls && !isLive) handler.postDelayed(startTimeout, START_TIMEOUT_MS)
         val builder = MediaItem.Builder()
             .setUri(url)
             .setMediaMetadata(MediaMetadata.Builder().setTitle(title).build())
-        if (hls) builder.setMimeType(MimeTypes.APPLICATION_M3U8)
+        if (hls || m3u8) builder.setMimeType(MimeTypes.APPLICATION_M3U8)
         val sub = externalSub
         val id = itemId
         val src = source
@@ -515,7 +522,7 @@ class PlayerActivity : ComponentActivity() {
         val pos = player?.currentPosition ?: 0
         if (QUALITIES[quality].second == 0 && !triedHls) {
             method = "DirectStream"
-            load(jf.directStreamUrl(id), pos, hls = false)
+            load(jf.directStreamUrl(id), pos, hls = false, m3u8 = sourceIsHls)
         } else {
             method = "Transcode"
             lifecycleScope.launch {
@@ -587,6 +594,8 @@ class PlayerActivity : ComponentActivity() {
             }
             sourceSwapped = true
             source = null
+            sourceIsHls = false          // fonte nova: o formato é descoberto de novo
+            triedDirectHls = false
             method = "DirectStream"
             load(jf.directStreamUrl(id), pos, hls = false)
             source = runCatching { jf.playbackInfo(id).sources.firstOrNull() }.getOrNull()
@@ -632,6 +641,10 @@ class PlayerActivity : ComponentActivity() {
 
     /** Erro do próprio formato (leitura, decodificação ou saída de áudio): repetir o mesmo arquivo não resolve. */
     private fun isFormatError(code: Int) = code in 3000..5999
+
+    /** A fonte do Jellyfin é uma lista HLS (ex.: .strm do indexador que aponta para um .m3u8). */
+    private fun isHlsSource(src: MediaSource?) =
+        src?.container?.split(',')?.any { it.trim().lowercase() in setOf("hls", "m3u8") } == true
 
     /* ---------------------------- eventos ---------------------------- */
 
@@ -736,7 +749,19 @@ class PlayerActivity : ComponentActivity() {
                 return
             }
             if (isLive) { reconnect(error.errorCodeName); return }
-            if (!isFormatError(error.errorCode) && networkRetries < MAX_NETWORK_RETRIES) {
+            // Reprodução direta de uma lista HLS aberta como arquivo comum: tenta de novo avisando que é HLS,
+            // antes de pedir outra fonte ou a conversão (o vídeo costuma tocar direto, sem ocupar o servidor)
+            if (isFormatError(error.errorCode) && !currentIsHls && !currentDirectHls && !triedDirectHls && itemId != null &&
+                (error.errorCode == PlaybackException.ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED || sourceIsHls)) {
+                triedDirectHls = true
+                sourceIsHls = true
+                val pos = p.currentPosition.coerceAtLeast(intent.getLongExtra(EXTRA_START_TICKS, 0L) / TICKS_PER_MS)
+                load(currentUrl, pos, hls = false, m3u8 = true)
+                return
+            }
+            // HLS direto com pedaço recusado (endereços relativos que só valem no indexador): não adianta insistir
+            val hlsRefused = currentDirectHls && error.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS
+            if (!isFormatError(error.errorCode) && !hlsRefused && networkRetries < MAX_NETWORK_RETRIES) {
                 // Falha de rede: insiste na mesma fonte (1 s, 2 s, 4 s) antes de pedir conversão
                 val delayMs = 1000L shl networkRetries
                 networkRetries++
@@ -761,7 +786,7 @@ class PlayerActivity : ComponentActivity() {
         Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
         handler.postDelayed({
             reconnectPending = false
-            if (player != null) { userPaused = false; load(currentUrl, 0, currentIsHls) }
+            if (player != null) { userPaused = false; load(currentUrl, 0, currentIsHls, currentIsHls || currentDirectHls) }
         }, (1500L * reconnects).coerceAtMost(15_000L))
     }
 
@@ -1178,7 +1203,7 @@ class PlayerActivity : ComponentActivity() {
     /** Recarrega a fonte atual (mesma URL) para anexar a legenda escolhida. */
     private fun reloadKeepingSource() {
         val pos = player?.currentPosition ?: 0
-        load(currentUrl, pos, currentIsHls)
+        load(currentUrl, pos, currentIsHls, currentIsHls || currentDirectHls)
     }
 
     private fun searchOnline() {
