@@ -1,4 +1,6 @@
+import java.net.URI
 import org.jetbrains.compose.desktop.application.dsl.TargetFormat
+
 
 /*
  * StreamBox para Windows e Linux (Compose Multiplatform + libmpv).
@@ -7,6 +9,7 @@ import org.jetbrains.compose.desktop.application.dsl.TargetFormat
  *   ./gradlew run                     -> PecBox (servidor fixo)
  *   ./gradlew run -Pedicao=comunidade -> Comunidade (qualquer Jellyfin)
  *   ./gradlew packageDeb / packageMsi -Pedicao=...   (o .msi só pode ser gerado no Windows)
+ *   ./gradlew baixarLibmpv            -> baixa a libmpv-2.dll (no Windows é automático no run/package)
  */
 
 plugins {
@@ -139,4 +142,68 @@ compose.desktop {
             }
         }
     }
+}
+
+/*
+ * Player no Windows: a libmpv-2.dll vem da compilação do projeto shinchiro/mpv-winbuild-cmake (GitHub).
+ * Baixada uma vez para resources/windows/, que o Compose põe ao lado do app (run, .msi e pasta portátil).
+ */
+val libmpvDll = layout.projectDirectory.file("resources/windows/libmpv-2.dll")
+
+val baixarLibmpv by tasks.registering {
+    description = "Baixa a libmpv-2.dll (player do Windows) para resources/windows/"
+    group = "streambox"
+    val destino = libmpvDll.asFile
+    onlyIf { !destino.exists() || project.hasProperty("forcarLibmpv") }
+    doLast {
+        val api = URI("https://api.github.com/repos/shinchiro/mpv-winbuild-cmake/releases/latest").toURL()
+        val json = api.openConnection().apply {
+            setRequestProperty("Accept", "application/vnd.github+json")
+            setRequestProperty("User-Agent", "streambox-build")
+            // No GitHub Actions usa o token do workflow (a API sem token tem limite baixo por IP)
+            System.getenv("GITHUB_TOKEN")?.takeIf { it.isNotBlank() }?.let { setRequestProperty("Authorization", "Bearer $it") }
+        }.getInputStream().bufferedReader().readText()
+        // Pacote de desenvolvimento x86_64 comum (sem "-v3", que exige CPU mais nova)
+        val url = Regex("\"browser_download_url\"\\s*:\\s*\"([^\"]+/mpv-dev-x86_64-\\d{8}-git-[^\"/]+\\.7z)\"")
+            .find(json)?.groupValues?.get(1)
+            ?: error("Não achei o pacote mpv-dev-x86_64 na última versão do mpv-winbuild-cmake")
+        logger.lifecycle("Baixando $url")
+        val arquivo = File(temporaryDir, url.substringAfterLast('/'))
+        URI(url).toURL().openConnection().apply { setRequestProperty("User-Agent", "streambox-build") }
+            .getInputStream().use { input -> arquivo.outputStream().use { input.copyTo(it) } }
+        destino.parentFile.mkdirs()
+        // O .7z do mpv usa o filtro BCJ2, que bibliotecas Java não leem: usa o 7-Zip.
+        val windows = System.getProperty("os.name").startsWith("Windows")
+        val extrator: List<String> = if (windows) {
+            // 7zr.exe: versão de linha de comando oficial do 7-Zip (sem instalar nada)
+            val exe = File(temporaryDir, "7zr.exe")
+            if (!exe.exists()) {
+                URI("https://www.7-zip.org/a/7zr.exe").toURL().openConnection()
+                    .apply { setRequestProperty("User-Agent", "streambox-build") }
+                    .getInputStream().use { input -> exe.outputStream().use { input.copyTo(it) } }
+            }
+            listOf(exe.absolutePath, "e", "-y", "-o${destino.parentFile.absolutePath}", arquivo.absolutePath, "libmpv-2.dll")
+        } else {
+            val path = System.getenv("PATH").orEmpty().split(File.pathSeparator)
+            fun acha(nome: String) = path.map { File(it, nome) }.firstOrNull { it.canExecute() }?.absolutePath
+            val seteZip = acha("7z") ?: acha("7za") ?: acha("7zr")
+            val bsdtar = acha("bsdtar")
+            when {
+                seteZip != null -> listOf(seteZip, "e", "-y", "-o${destino.parentFile.absolutePath}", arquivo.absolutePath, "libmpv-2.dll")
+                bsdtar != null -> listOf(bsdtar, "-xf", arquivo.absolutePath, "-C", destino.parentFile.absolutePath, "libmpv-2.dll")
+                else -> error("Instale o 7-Zip (sudo apt install 7zip) ou o bsdtar (libarchive-tools) para extrair a DLL")
+            }
+        }
+        val proc = ProcessBuilder(extrator).redirectErrorStream(true).start()
+        val saida = proc.inputStream.bufferedReader().readText()
+        check(proc.waitFor() == 0) { "Falha ao extrair a libmpv-2.dll:\n$saida" }
+        arquivo.delete()
+        check(destino.exists()) { "libmpv-2.dll não estava no pacote $url" }
+        logger.lifecycle("libmpv-2.dll pronta em $destino (${destino.length() / 1_048_576} MB)")
+    }
+}
+
+// No Windows, garante a DLL antes de juntar os recursos do app (run, createDistributable, packageMsi…)
+if (System.getProperty("os.name").startsWith("Windows")) {
+    tasks.matching { it.name == "prepareAppResources" }.configureEach { dependsOn(baixarLibmpv) }
 }

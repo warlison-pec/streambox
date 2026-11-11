@@ -25,16 +25,10 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      # libmpv (player) para Windows x86_64, compilação do projeto shinchiro/mpv-winbuild-cmake
-      - name: Baixar libmpv-2.dll
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release download --repo shinchiro/mpv-winbuild-cmake --pattern 'mpv-dev-x86_64-2*.7z' --dir mpv
-          7z e mpv/*.7z -oresources/windows libmpv-2.dll -y
-          ls -la resources/windows
-
+      # A libmpv-2.dll (player) é baixada pelo próprio Gradle (tarefa baixarLibmpv, com o 7zr.exe oficial)
       - name: Gerar .msi
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: ./gradlew --console=plain -Pedicao=${{ matrix.edicao }} packageMsi
 
       - uses: actions/upload-artifact@v4

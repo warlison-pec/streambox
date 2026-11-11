@@ -27,7 +27,8 @@ Precisa de JDK 17 e, no Linux, do libmpv (`sudo apt install libmpv2`).
 ./gradlew run -Pedicao=comunidade   # edição Comunidade
 ```
 
-No Windows, coloque a `libmpv-2.dll` em `resources/windows/` (ou aponte `STREAMBOX_MPV_DIR` para a pasta dela).
+No Windows, `gradlew.bat run` baixa sozinho a `libmpv-2.dll` (do projeto shinchiro/mpv-winbuild-cmake, ~116 MB)
+para `resources/windows/` na primeira vez. Para baixar de novo: `gradlew.bat baixarLibmpv -PforcarLibmpv`.
 
 ## Instaladores
 

@@ -271,7 +271,12 @@ class PlayerController(private val s: Session, private val scope: CoroutineScope
 
     private fun missingMpvMessage(): String {
         val windows = System.getProperty("os.name").orEmpty().startsWith("Windows")
-        return if (windows) "O componente de vídeo (libmpv-2.dll) não foi encontrado. Reinstale o StreamBox."
-        else "O componente de vídeo (libmpv) não está instalado. No terminal: sudo apt install libmpv2"
+        val installed = System.getProperty("jpackage.app-path") != null
+        return when {
+            !windows -> "O componente de vídeo (libmpv) não está instalado. No terminal: sudo apt install libmpv2"
+            installed -> "O componente de vídeo (libmpv-2.dll) não foi encontrado na pasta do programa. Reinstale o StreamBox."
+            else -> "libmpv-2.dll não encontrada (procurada em: ${LibMpv.searched.ifEmpty { listOf("nenhuma pasta de recursos") }.joinToString()}). " +
+                "Rodando pelo código-fonte: feche o app e rode gradlew.bat baixarLibmpv (o run também baixa sozinho)."
+        }
     }
 }

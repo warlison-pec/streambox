@@ -83,8 +83,9 @@ private fun testMpv(target: String?): Int {
         println("uso: --testar-mpv <arquivo ou URL>")
         return 2
     }
+    println("pasta de recursos: ${System.getProperty("compose.application.resources.dir")}")
     val lib = LibMpv.instance ?: run {
-        println("libmpv não encontrado:\n${LibMpv.loadError}")
+        println("libmpv não encontrado (pastas: ${LibMpv.searched}):\n${LibMpv.loadError}")
         return 1
     }
     val m = Mpv(lib)

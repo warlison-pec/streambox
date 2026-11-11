@@ -36,6 +36,10 @@ interface LibMpv : Library {
         var loadError: String? = null
             private set
 
+        /** Pastas onde a DLL/.so foi procurada além das do sistema (para a mensagem de erro). */
+        var searched: List<String> = emptyList()
+            private set
+
         private fun load(): LibMpv? {
             System.setProperty("jna.encoding", "UTF-8")
             // Pasta de recursos do instalador (onde fica a libmpv-2.dll no Windows)
@@ -56,6 +60,7 @@ interface LibMpv : Library {
                     errors += "$name: ${e.message?.lineSequence()?.firstOrNull()}"
                 }
             }
+            searched = dirs
             loadError = errors.joinToString("\n")
             return null
         }
