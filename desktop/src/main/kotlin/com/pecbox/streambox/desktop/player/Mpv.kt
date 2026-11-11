@@ -92,6 +92,17 @@ object MpvEndReason {
 @Suppress("FunctionName")
 private interface LibC : Library {
     fun setlocale(category: Int, locale: String?): Pointer?
+    fun unsetenv(name: String): Int
+}
+
+/**
+ * Vídeo dentro da janela do app (opção wid): a janela do Java é X11 (no Wayland, via XWayland),
+ * então o mpv precisa usar o X11 também. Sem o WAYLAND_DISPLAY ele não tenta o Wayland.
+ */
+fun preferX11ForEmbedding() {
+    if (System.getProperty("os.name").orEmpty().startsWith("Windows")) return
+    if (System.getenv("WAYLAND_DISPLAY").isNullOrBlank()) return
+    runCatching { Native.load("c", LibC::class.java).unsetenv("WAYLAND_DISPLAY") }
 }
 
 /**

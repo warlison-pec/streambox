@@ -169,7 +169,8 @@ private fun RailItem(icon: ImageVector, label: String, selected: Boolean, onClic
 @Composable
 private fun PlayerBar(player: PlayerController, modifier: Modifier) {
     val st = player.state
-    if (st == PlayerState.Idle) return
+    // Com o player aberto o vídeo cobre a janela; a barra só aparece para erros depois que ele fecha
+    if (st == PlayerState.Idle || player.active) return
     Row(
         modifier.padding(20.dp).widthIn(max = 760.dp).clip(RoundedCornerShape(14.dp)).background(Surface2)
             .padding(horizontal = 18.dp, vertical = 12.dp),

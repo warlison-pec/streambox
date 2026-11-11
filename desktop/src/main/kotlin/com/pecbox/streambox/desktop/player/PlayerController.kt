@@ -18,6 +18,8 @@ import java.io.File
 import java.io.PrintWriter
 import java.time.LocalTime
 import java.util.UUID
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.TimeUnit
 
 sealed interface PlayerState {
     data object Idle : PlayerState
@@ -48,7 +50,9 @@ sealed interface PlayRequest {
 
 /**
  * Reprodução com o mpv: sempre o arquivo original (Direct Play), nada de conversão no servidor.
- * O mpv abre a própria janela (funciona igual no Windows, no X11 e no Wayland) com os controles na tela.
+ * O vídeo é desenhado dentro da janela do app (opção wid do mpv), ocupando a janela inteira como no
+ * app Android; os controles (voltar, barra de progresso, áudio, legenda…) são desenhados pelo próprio mpv
+ * com o script streambox_osc.lua, no visual do StreamBox.
  *
  * Uma thread por sessão de reprodução lê os eventos do mpv, envia o progresso ao Jellyfin,
  * emenda o próximo episódio na mesma janela e, na TV ao vivo, troca de canal (↑/↓, PgUp/PgDn),
@@ -59,8 +63,30 @@ class PlayerController(private val s: Session, private val scope: CoroutineScope
     var state by mutableStateOf<PlayerState>(PlayerState.Idle)
         private set
 
-    /** Chamado quando a janela do player fecha (a tela inicial atualiza "Continuar assistindo"). */
+    /** Chamado quando o player fecha (a tela inicial atualiza "Continuar assistindo"). */
     var onFinished: () -> Unit = {}
+
+    /** Player aberto: a área de vídeo cobre a janela do app. */
+    var active by mutableStateOf(false)
+        private set
+
+    /** Janela do app em tela cheia enquanto o vídeo toca (botão do player, F, duplo clique). */
+    var fullscreen by mutableStateOf(false)
+
+    /** Identificador nativo da área de vídeo (HWND no Windows, janela X11 no Linux). */
+    @Volatile private var surface = CompletableFuture<Long>()
+
+    fun attachSurface(wid: Long) { surface.complete(wid) }
+
+    fun detachSurface() { if (surface.isDone) surface = CompletableFuture() }
+
+    /** Tecla apertada com o foco na janela do app: repassa ao mpv (no Windows o mpv também recebe direto). */
+    fun keypress(name: String) { mpv?.command("keypress", name) }
+
+    /** Esc: sai da tela cheia; se já estiver em janela, volta (fecha o player), como o voltar do Android. */
+    fun escape() {
+        if (fullscreen) fullscreen = false else stop()
+    }
 
     @Volatile private var mpv: Mpv? = null
     @Volatile private var pending: PlayRequest? = null
@@ -107,6 +133,11 @@ class PlayerController(private val s: Session, private val scope: CoroutineScope
             return
         }
         state = PlayerState.Opening(titleOf(r))
+        if (!active) {
+            surface = CompletableFuture()
+            fullscreen = s.fullscreen
+            active = true
+        }
         Thread({ runSession(lib, r) }, "mpv-eventos").apply { isDaemon = true }.start()
     }
 
@@ -188,13 +219,16 @@ class PlayerController(private val s: Session, private val scope: CoroutineScope
         m.option("force-window", "yes")
         m.option("idle", "yes")
         m.option("keep-open", "no")
-        m.option("fullscreen", if (s.fullscreen) "yes" else "no")
-        m.option("autofit-larger", "90%x90%")
-        m.option("title", "\${media-title} · StreamBox")
-        m.option("osc", "yes")
-        m.option("script-opts", "osc-layout=bottombar,osc-seekbarstyle=bar,osc-hidetimeout=1500,osc-idlescreen=no")
+        m.option("background", "#000000")
+        // Controles do StreamBox no lugar dos do mpv
+        m.option("osc", "no")
+        m.option("load-stats-overlay", "no")
+        m.option("load-console", "no")
+        m.option("scripts", oscScript().absolutePath)
         m.option("input-default-bindings", "yes")
         m.option("input-vo-keyboard", "yes")
+        m.option("input-cursor", "yes")
+        m.option("cursor-autohide", "1500")
         m.option("ytdl", "no")
         m.option("cache", "yes")
         m.option("demuxer-max-bytes", "300MiB")
@@ -223,7 +257,25 @@ class PlayerController(private val s: Session, private val scope: CoroutineScope
         m.command("define-section", "streambox-live", keys, "force")
     }
 
+    /** Copia o script dos controles para a pasta de dados (sempre a versão que veio com o app). */
+    private fun oscScript(): File {
+        val f = File(File(dataDir, "mpv"), "streambox_osc.lua")
+        javaClass.getResourceAsStream("/streambox_osc.lua")?.use { input -> f.outputStream().use { input.copyTo(it) } }
+        return f
+    }
+
+    /** Título e linha de baixo mostrados no topo do player. */
+    private fun sendInfo(m: Mpv, c: Current) {
+        val (title, subtitle) = when {
+            c.isLive -> c.title to (c.live?.queue?.getOrNull(c.live.index)?.now?.let { "Agora: $it" } ?: "")
+            c.item?.isEpisode == true -> (c.item.seriesName ?: c.item.name) to c.item.episodeLabel
+            else -> c.title to listOfNotNull(c.item?.year?.toString(), c.item?.runtimeLabel).joinToString(" · ")
+        }
+        m.command("script-message", "sb-info", if (c.isLive) "live" else "vod", title, subtitle)
+    }
+
     private fun load(m: Mpv, c: Current, defaultUa: String) {
+        sendInfo(m, c)
         m.set("force-media-title", c.title)
         m.set("start", if (c.startSeconds > 5) "+%.3f".format(java.util.Locale.US, c.startSeconds) else "none")
         m.set("user-agent", c.userAgent ?: defaultUa)
@@ -251,10 +303,19 @@ class PlayerController(private val s: Session, private val scope: CoroutineScope
         val log = runCatching { PrintWriter(File(dataDir, "player.log").bufferedWriter(), true) }.getOrNull()
         fun logLine(t: String) = log?.println("${LocalTime.now().withNano(0)} $t")
         val m = try {
-            Mpv(lib).also { configure(it); it.initialize() }
+            // Espera a área de vídeo aparecer na janela do app
+            val wid = surface.get(10, TimeUnit.SECONDS)
+            preferX11ForEmbedding()
+            Mpv(lib).also {
+                configure(it)
+                it.option("wid", wid.toString())
+                it.initialize()
+            }
         } catch (e: Throwable) {
-            state = PlayerState.Failed("Não foi possível iniciar o player: ${e.message}")
+            state = PlayerState.Failed("Não foi possível iniciar o player: ${e.message ?: e.javaClass.simpleName}")
             log?.close()
+            active = false
+            fullscreen = false
             return
         }
         mpv = m
@@ -340,11 +401,17 @@ class PlayerController(private val s: Session, private val scope: CoroutineScope
                 MpvEvent.LOG_MESSAGE -> ev.log?.let { logLine(it) }
                 MpvEvent.CLIENT_MESSAGE -> {
                     val msg = ev.message.orEmpty()
-                    if (msg.firstOrNull() == "sb-canal") zap(msg.getOrNull(1)?.toIntOrNull() ?: 1)
+                    when (msg.firstOrNull()) {
+                        "sb-canal" -> zap(msg.getOrNull(1)?.toIntOrNull() ?: 1)
+                        "sb-voltar" -> m.command("quit")
+                        "sb-esc" -> scope.launch { escape() }
+                        "sb-tela-cheia" -> scope.launch { fullscreen = !fullscreen }
+                    }
                 }
                 MpvEvent.FILE_LOADED -> {
                     val c = current ?: continue@loop
                     addExternalSubs(m, c)
+                    sendInfo(m, c)   // o script pode ter carregado depois do primeiro aviso
                     state = PlayerState.Playing(c.title, live = c.isLive)
                     logLine("tocando: vídeo=${m.get("video-codec")} ${m.get("width")}x${m.get("height")} áudio=${m.get("audio-codec-name")} hwdec=${m.get("hwdec-current")}")
                     val tracks = m.get("track-list/count")?.toIntOrNull() ?: 0
@@ -428,9 +495,11 @@ class PlayerController(private val s: Session, private val scope: CoroutineScope
 
         mpv = null
         pending = null
-        m.destroy()
+        m.destroy()          // antes de tirar a área de vídeo da tela
         log?.close()
         state = failure?.let { PlayerState.Failed(it) } ?: PlayerState.Idle
+        fullscreen = false
+        active = false
         scope.launch { onFinished() }
     }
 

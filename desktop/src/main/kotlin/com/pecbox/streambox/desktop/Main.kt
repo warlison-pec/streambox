@@ -1,6 +1,11 @@
 package com.pecbox.streambox.desktop
 
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -31,6 +36,8 @@ import com.pecbox.streambox.desktop.ui.LoginScreen
 import com.pecbox.streambox.desktop.ui.Nav
 import com.pecbox.streambox.desktop.ui.Shell
 import com.pecbox.streambox.desktop.ui.StreamBoxTheme
+import com.pecbox.streambox.desktop.ui.VideoSurface
+import com.pecbox.streambox.desktop.ui.forwardKeyToPlayer
 import okio.Path.Companion.toOkioPath
 import java.io.File
 import kotlin.system.exitProcess
@@ -53,8 +60,13 @@ fun main(args: Array<String>) {
             title = BuildConfig.APP_NAME,
             icon = icon,
             onPreviewKeyEvent = { e ->
-                // Esc / Backspace fora de campos de texto: volta uma tela
-                if (e.type == KeyEventType.KeyUp && e.key == Key.Escape) nav.back() else false
+                when {
+                    // Player aberto: as teclas vão para o vídeo (espaço pausa, setas, Esc volta…)
+                    player.active -> forwardKeyToPlayer(e, player)
+                    // Esc fora de campos de texto: volta uma tela
+                    e.type == KeyEventType.KeyUp && e.key == Key.Escape -> nav.back()
+                    else -> false
+                }
             },
         ) {
             setSingletonImageLoaderFactory { ctx ->
@@ -68,9 +80,33 @@ fun main(args: Array<String>) {
                     }
                     .build()
             }
+            // Tela cheia da janela do app enquanto o vídeo toca
+            var placementBefore by remember { mutableStateOf(windowState.placement) }
+            var weMadeFullscreen by remember { mutableStateOf(false) }
+            LaunchedEffect(player.fullscreen) {
+                if (player.fullscreen && !weMadeFullscreen) {
+                    placementBefore = windowState.placement
+                    weMadeFullscreen = true
+                    windowState.placement = WindowPlacement.Fullscreen
+                } else if (!player.fullscreen && weMadeFullscreen) {
+                    // Volta ao tamanho de antes (maximizada ou janela), mesmo se o sistema não avisou a mudança
+                    weMadeFullscreen = false
+                    // Tela cheia -> maximizada direto não sai da tela cheia no Linux: passa por "janela" antes
+                    windowState.placement = WindowPlacement.Floating
+                    val target = if (placementBefore == WindowPlacement.Fullscreen) WindowPlacement.Maximized else placementBefore
+                    if (target != WindowPlacement.Floating) {
+                        kotlinx.coroutines.delay(150)
+                        windowState.placement = target
+                    }
+                }
+            }
             StreamBoxTheme {
                 Surface(Modifier.fillMaxSize(), color = Black) {
-                    if (session.loggedIn) Shell(session, player, nav) else LoginScreen(session)
+                    Box(Modifier.fillMaxSize()) {
+                        // As telas continuam montadas por baixo: ao voltar do vídeo, tudo está onde estava
+                        if (session.loggedIn) Shell(session, player, nav) else LoginScreen(session)
+                        if (player.active) VideoSurface(player, Modifier.fillMaxSize())
+                    }
                 }
             }
         }
