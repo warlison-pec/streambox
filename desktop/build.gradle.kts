@@ -19,7 +19,7 @@ plugins {
     id("org.jetbrains.compose") version "1.7.3"
 }
 
-val appVersion = "0.1.5"
+val appVersion = "0.1.6"
 val edicao = (findProperty("edicao") as String?) ?: "pecbox"
 
 data class Edicao(

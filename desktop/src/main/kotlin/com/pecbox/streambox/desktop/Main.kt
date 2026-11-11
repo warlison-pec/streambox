@@ -37,6 +37,7 @@ import com.pecbox.streambox.desktop.ui.Nav
 import com.pecbox.streambox.desktop.ui.Shell
 import com.pecbox.streambox.desktop.ui.StreamBoxTheme
 import com.pecbox.streambox.desktop.ui.VideoSurface
+import com.pecbox.streambox.desktop.ui.WinFullscreen
 import com.pecbox.streambox.desktop.ui.forwardKeyToPlayer
 import okio.Path.Companion.toOkioPath
 import java.io.File
@@ -84,6 +85,15 @@ fun main(args: Array<String>) {
             var placementBefore by remember { mutableStateOf(windowState.placement) }
             var weMadeFullscreen by remember { mutableStateOf(false) }
             LaunchedEffect(player.fullscreen) {
+                // Windows: tira a barra de título e a moldura e cobre o monitor (some a barra de tarefas)
+                if (WinFullscreen.supported) {
+                    if (player.fullscreen && !WinFullscreen.active) {
+                        if (WinFullscreen.enter(window)) return@LaunchedEffect
+                    } else if (!player.fullscreen && WinFullscreen.active) {
+                        WinFullscreen.exit(window)
+                        return@LaunchedEffect
+                    }
+                }
                 if (player.fullscreen && !weMadeFullscreen) {
                     placementBefore = windowState.placement
                     weMadeFullscreen = true
