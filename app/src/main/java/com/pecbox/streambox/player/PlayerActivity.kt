@@ -92,6 +92,7 @@ class PlayerActivity : ComponentActivity() {
 
     companion object {
         const val EXTRA_ID = "id"
+        private const val SYNC_IDLE_MS = 6_000L   // a barra de sincronia some sozinha depois disso
         const val EXTRA_TITLE = "title"
         const val EXTRA_START_TICKS = "start"
         const val EXTRA_URL = "url"          // canal de lista M3U externa
@@ -1018,7 +1019,7 @@ class PlayerActivity : ComponentActivity() {
         data class Embedded(val group: Tracks.Group, val index: Int, override val label: String) : SubOption
         data class FromServer(val stream: MediaStream, override val label: String) : SubOption
         data object Download : SubOption { override val label = "Baixar legenda da internet…" }
-        data object Sync : SubOption { override val label = "Sincronia da legenda (adiantar/atrasar)…" }
+        data object Sync : SubOption { override val label = "Sincronia da legenda (adiantar/atrasar)" }
         data object Appearance : SubOption { override val label = "Aparência da legenda…" }
     }
 
@@ -1084,22 +1085,64 @@ class PlayerActivity : ComponentActivity() {
         }
     }
 
-    /** Adiantar/atrasar a legenda; a lista reabre para ajustar aos poucos vendo o resultado. */
-    private fun showSync() {
-        val step = SubtitleSync.STEP_MS
-        val steps = listOf(
-            "Adiantar 0,25 s" to step, "Atrasar 0,25 s" to -step,
-            "Adiantar 1 s" to 1_000L, "Atrasar 1 s" to -1_000L,
-            "Voltar ao original" to null,
-        )
-        choose("Legenda ${SubtitleSync.label()}", steps.map { it.first }, -1) { i ->
-            val before = SubtitleSync.offsetMs
-            SubtitleSync.set(steps[i].second?.let { before + it } ?: 0L)
-            // Atrasar faz a legenda "voltar no tempo": recarrega a posição para reaparecer a fala atual
-            if (SubtitleSync.offsetMs < before) player?.let { it.seekTo(it.currentPosition) }
-            Toast.makeText(this, "Legenda ${SubtitleSync.label()}", Toast.LENGTH_SHORT).show()
-            showSync()
+    /* ------------- sincronia da legenda: barra estilo volume (← adianta, → atrasa) ------------- */
+
+    private lateinit var syncBar: SubtitleSyncBar
+    private val syncOpen get() = ::syncBar.isInitialized && syncBar.visibility == View.VISIBLE
+    private val hideSync = Runnable { closeSync() }
+    // Atrasar faz a legenda "voltar no tempo": recarrega a posição (uma vez, quando parar de apertar)
+    private val resyncSubs = Runnable { player?.let { it.seekTo(it.currentPosition) } }
+
+    private fun buildSyncBar(root: FrameLayout) {
+        syncBar = SubtitleSyncBar(this).apply {
+            visibility = View.GONE
+            hintText = if (isTvDevice) "←  adianta   ·   atrasa  →   ·   OK ou Voltar fecha" else "Toque à esquerda para adiantar e à direita para atrasar"
+            onTap = { advance -> stepSync(advance) }
         }
+        // No alto da tela: a legenda continua visível embaixo enquanto ajusta
+        root.addView(syncBar, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.CENTER_HORIZONTAL)
+            .apply { topMargin = dp(36); marginStart = dp(16); marginEnd = dp(16) })
+    }
+
+    private fun showSync() {
+        view.hideController()
+        syncBar.offsetMs = SubtitleSync.offsetMs
+        syncBar.visibility = View.VISIBLE
+        syncBar.bringToFront()
+        handler.removeCallbacks(hideSync)
+        handler.postDelayed(hideSync, SYNC_IDLE_MS)
+    }
+
+    private fun closeSync() {
+        handler.removeCallbacks(hideSync)
+        if (::syncBar.isInitialized) syncBar.visibility = View.GONE
+    }
+
+    private fun stepSync(advance: Boolean) {
+        val before = SubtitleSync.offsetMs
+        SubtitleSync.set(before + if (advance) SubtitleSync.STEP_MS else -SubtitleSync.STEP_MS)
+        syncBar.offsetMs = SubtitleSync.offsetMs
+        if (SubtitleSync.offsetMs < before) {
+            handler.removeCallbacks(resyncSubs)
+            handler.postDelayed(resyncSubs, 700)
+        }
+        handler.removeCallbacks(hideSync)
+        handler.postDelayed(hideSync, SYNC_IDLE_MS)
+    }
+
+    /** Com a barra aberta: ← adianta, → atrasa (segurar repete), OK/Voltar fecham, o resto é ignorado. */
+    private fun syncKey(event: KeyEvent): Boolean {
+        val down = event.action == KeyEvent.ACTION_DOWN
+        when (event.keyCode) {
+            KeyEvent.KEYCODE_DPAD_LEFT -> if (down) stepSync(advance = true)
+            KeyEvent.KEYCODE_DPAD_RIGHT -> if (down) stepSync(advance = false)
+            KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER, KeyEvent.KEYCODE_BUTTON_A,
+            KeyEvent.KEYCODE_BACK, KeyEvent.KEYCODE_ESCAPE, KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN ->
+                if (down && event.repeatCount == 0) closeSync()
+            KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, KeyEvent.KEYCODE_MEDIA_PLAY, KeyEvent.KEYCODE_MEDIA_PAUSE -> return false
+            else -> return false
+        }
+        return true
     }
 
     /** Legendas do servidor que o player só mostra se forem carregadas como arquivo à parte. */
@@ -1398,6 +1441,7 @@ class PlayerActivity : ComponentActivity() {
         }
         root.addView(episodesPanel, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM))
         buildLiveViews(root)
+        buildSyncBar(root)
     }
 
     /* ======================= TV ao vivo: faixa de informação e lista lateral ======================= */
@@ -1960,6 +2004,7 @@ class PlayerActivity : ComponentActivity() {
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         val code = event.keyCode
         val down = event.action == KeyEvent.ACTION_DOWN
+        if (syncOpen && syncKey(event)) return true
         // Lista de episódios aberta: ↑ ou Voltar fecham (↑ volta aos controles)
         if (episodesOpen) {
             if (code == KeyEvent.KEYCODE_BACK || code == KeyEvent.KEYCODE_DPAD_UP) {
@@ -2065,6 +2110,8 @@ class PlayerActivity : ComponentActivity() {
         handler.removeCallbacks(hideOsd)
         handler.removeCallbacks(hideInfo)
         handler.removeCallbacks(tuneTask)
+        handler.removeCallbacks(hideSync)
+        handler.removeCallbacks(resyncSubs)
         handler.removeCallbacks(numberTask)
         handler.removeCallbacks(endLogoPeek)
         handler.removeCallbacks(hideExitHint)
