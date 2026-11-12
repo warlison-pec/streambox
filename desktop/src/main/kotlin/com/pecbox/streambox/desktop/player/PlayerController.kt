@@ -1,5 +1,6 @@
 package com.pecbox.streambox.desktop.player
 
+import kotlin.math.abs
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -463,6 +464,7 @@ class PlayerController(private val s: Session, private val scope: CoroutineScope
                 }
                 MpvEvent.FILE_LOADED -> {
                     val c = current ?: continue@loop
+                    m.set("sub-delay", "0")   // a sincronia ajustada vale só para o vídeo em que foi feita
                     addExternalSubs(m, c)
                     restoreTracks(m, c)
                     sendInfo(m, c)   // o script pode ter carregado depois do primeiro aviso
@@ -641,15 +643,19 @@ class PlayerController(private val s: Session, private val scope: CoroutineScope
         if (t.external) "Externa" else null,
     ).joinToString(" · ")
 
-    private class MenuItem(val label: String, val cmd: List<String>?, val checked: Boolean = false, val detail: String? = null)
+    private class MenuItem(
+        val label: String, val cmd: List<String>?, val checked: Boolean = false, val detail: String? = null,
+        val keep: Boolean = false,   // o menu continua aberto depois da escolha
+    )
 
     private fun sendMenu(
         m: Mpv, id: String, title: String, items: List<MenuItem>,
-        group: String? = null, left: List<String>? = null, right: List<String>? = null,
+        group: String? = null, left: List<String>? = null, right: List<String>? = null, sel: Int? = null,
     ) {
         val json = buildJsonObject {
             put("id", id)
             put("title", title)
+            if (sel != null) put("sel", sel)
             if (group != null) put("group", group)
             if (left != null) put("left", JsonArray(left.map { JsonPrimitive(it) }))
             if (right != null) put("right", JsonArray(right.map { JsonPrimitive(it) }))
@@ -658,6 +664,7 @@ class PlayerController(private val s: Session, private val scope: CoroutineScope
                     put("label", it.label)
                     if (it.detail != null) put("detail", it.detail)
                     if (it.checked) put("checked", true)
+                    if (it.keep) put("keep", true)
                     if (it.cmd != null) put("cmd", JsonArray(it.cmd.map { a -> JsonPrimitive(a) }))
                 })
             })
@@ -681,8 +688,34 @@ class PlayerController(private val s: Session, private val scope: CoroutineScope
         val items = mutableListOf(MenuItem("Desligadas", listOf("sub", "no"), checked = subs.none { it.selected }))
         subs.forEach { t -> items += MenuItem(trackLabel(t), listOf("sub", t.id), t.selected, trackDetail(t).ifBlank { null }) }
         if (c?.item != null) items += MenuItem("Baixar legenda da internet…", listOf("sub-online"))
+        if (subs.any { it.selected }) items += MenuItem("Sincronia da legenda…", listOf("sincronia"), detail = syncLabel(m))
         items += MenuItem("Aparência da legenda…", listOf("aparencia"))
         sendMenu(m, "legendas", "Legendas", items)
+    }
+
+    /* Sincronia: no mpv, sub-delay positivo = legenda atrasada. Volta a zero a cada vídeo. */
+    private val syncSteps = listOf(
+        "Adiantar 0,25 s" to -250, "Atrasar 0,25 s" to 250,
+        "Adiantar 1 s" to -1000, "Atrasar 1 s" to 1000,
+    )
+
+    private fun syncLabel(m: Mpv): String {
+        val ms = Math.round((m.double("sub-delay") ?: 0.0) * 1000)
+        if (ms == 0L) return "no tempo original"
+        val secs = java.text.DecimalFormat("0.##", java.text.DecimalFormatSymbols(java.util.Locale.forLanguageTag("pt-BR"))).format(abs(ms) / 1000.0)
+        return (if (ms < 0) "adiantada " else "atrasada ") + secs + " s"
+    }
+
+    private fun syncMenu(m: Mpv, sel: Int? = null) {
+        val items = syncSteps.map { (label, ms) -> MenuItem(label, listOf("sync", "$ms"), keep = true) } +
+            MenuItem("Voltar ao original", listOf("sync", "0"), keep = true) +
+            MenuItem("Voltar às legendas", listOf("abrir", "legendas"))
+        sendMenu(m, "sincronia", "Legenda ${syncLabel(m)}  ·  atalhos G / H", items, sel = sel)
+    }
+
+    private fun applySync(m: Mpv, ms: Int) {
+        if (ms == 0) m.set("sub-delay", "0") else m.command("add", "sub-delay", "%.3f".format(java.util.Locale.US, ms / 1000.0))
+        m.command("show-text", "Legenda ${syncLabel(m)}", "1500")
     }
 
     private fun audioMenu(m: Mpv) {
@@ -830,6 +863,13 @@ class PlayerController(private val s: Session, private val scope: CoroutineScope
                 if (c?.item != null && !c.isLive) s.saveTrackChoice("audio", c.item.seriesId, TrackChoice(language = t.lang, label = t.title))
             }
             "aparencia" -> appearanceMenu(m)
+            "sincronia" -> syncMenu(m)
+            "sync" -> {
+                val ms = cmd.getOrNull(1)?.toIntOrNull() ?: return
+                applySync(m, ms)
+                // Pelo menu: reabre no mesmo item; pelos atalhos G/H com o menu fechado, só o aviso
+                if (cmd.getOrNull(2) != "tecla") syncMenu(m, sel = (syncSteps.indexOfFirst { it.second == ms }.takeIf { it >= 0 } ?: syncSteps.size) + 1)
+            }
             "ap-menu" -> appearanceOptions(m, cmd.getOrNull(1).orEmpty())
             "ap" -> {
                 val i = cmd.getOrNull(2)?.toIntOrNull() ?: return

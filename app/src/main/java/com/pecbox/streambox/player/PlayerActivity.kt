@@ -339,7 +339,8 @@ class PlayerActivity : ComponentActivity() {
             .setConnectTimeoutMs(15_000)
             .setReadTimeoutMs(30_000)
         applyHeaders(intent.getStringExtra(EXTRA_UA), intent.getStringExtra(EXTRA_REFERER))
-        val renderers = DefaultRenderersFactory(this)
+        SubtitleSync.set(0)      // cada vídeo começa com a legenda no tempo original
+        val renderers = SubtitleSync.Renderers(this)
             .setEnableDecoderFallback(true)
             .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
         val exo = ExoPlayer.Builder(this, renderers)
@@ -1017,6 +1018,7 @@ class PlayerActivity : ComponentActivity() {
         data class Embedded(val group: Tracks.Group, val index: Int, override val label: String) : SubOption
         data class FromServer(val stream: MediaStream, override val label: String) : SubOption
         data object Download : SubOption { override val label = "Baixar legenda da internet…" }
+        data object Sync : SubOption { override val label = "Sincronia da legenda (adiantar/atrasar)…" }
         data object Appearance : SubOption { override val label = "Aparência da legenda…" }
     }
 
@@ -1046,6 +1048,7 @@ class PlayerActivity : ComponentActivity() {
                 .forEach { options += SubOption.FromServer(it, "${it.label} (servidor)") }
         }
         if (itemId != null && !isLive) options += SubOption.Download
+        if (!textDisabled) options += SubOption.Sync
         options += SubOption.Appearance
         if (options.size <= 2 && src == null && itemId != null && !isLive) {
             Toast.makeText(this, "Carregando lista de legendas…", Toast.LENGTH_SHORT).show()
@@ -1075,8 +1078,27 @@ class PlayerActivity : ComponentActivity() {
                     reloadKeepingSource()
                 }
                 SubOption.Download -> searchOnline()
+                SubOption.Sync -> showSync()
                 SubOption.Appearance -> showAppearance()
             }
+        }
+    }
+
+    /** Adiantar/atrasar a legenda; a lista reabre para ajustar aos poucos vendo o resultado. */
+    private fun showSync() {
+        val step = SubtitleSync.STEP_MS
+        val steps = listOf(
+            "Adiantar 0,25 s" to step, "Atrasar 0,25 s" to -step,
+            "Adiantar 1 s" to 1_000L, "Atrasar 1 s" to -1_000L,
+            "Voltar ao original" to null,
+        )
+        choose("Legenda ${SubtitleSync.label()}", steps.map { it.first }, -1) { i ->
+            val before = SubtitleSync.offsetMs
+            SubtitleSync.set(steps[i].second?.let { before + it } ?: 0L)
+            // Atrasar faz a legenda "voltar no tempo": recarrega a posição para reaparecer a fala atual
+            if (SubtitleSync.offsetMs < before) player?.let { it.seekTo(it.currentPosition) }
+            Toast.makeText(this, "Legenda ${SubtitleSync.label()}", Toast.LENGTH_SHORT).show()
+            showSync()
         }
     }
 

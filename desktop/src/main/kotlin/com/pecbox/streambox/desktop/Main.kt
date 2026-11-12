@@ -26,6 +26,7 @@ import coil3.ImageLoader
 import coil3.compose.setSingletonImageLoaderFactory
 import coil3.disk.DiskCache
 import coil3.network.okhttp.OkHttpNetworkFetcherFactory
+import com.pecbox.streambox.desktop.data.DesktopUpdate
 import com.pecbox.streambox.desktop.data.Session
 import com.pecbox.streambox.desktop.data.dataDir
 import com.pecbox.streambox.desktop.player.LibMpv
@@ -36,6 +37,7 @@ import com.pecbox.streambox.desktop.ui.LoginScreen
 import com.pecbox.streambox.desktop.ui.Nav
 import com.pecbox.streambox.desktop.ui.Shell
 import com.pecbox.streambox.desktop.ui.StreamBoxTheme
+import com.pecbox.streambox.desktop.ui.UpdateDialog
 import com.pecbox.streambox.desktop.ui.VideoSurface
 import com.pecbox.streambox.desktop.ui.WinFullscreen
 import com.pecbox.streambox.desktop.ui.forwardKeyToPlayer
@@ -110,12 +112,21 @@ fun main(args: Array<String>) {
                     }
                 }
             }
+            // Confere se há versão nova ao abrir o app e depois a cada 6 h
+            LaunchedEffect(Unit) {
+                while (true) {
+                    runCatching { DesktopUpdate.check(session.http) }
+                    kotlinx.coroutines.delay(6 * 3_600_000L)
+                }
+            }
             StreamBoxTheme {
                 Surface(Modifier.fillMaxSize(), color = Black) {
                     Box(Modifier.fillMaxSize()) {
                         // As telas continuam montadas por baixo: ao voltar do vídeo, tudo está onde estava
                         if (session.loggedIn) Shell(session, player, nav) else LoginScreen(session)
                         if (player.active) VideoSurface(player, Modifier.fillMaxSize())
+                        // Nova versão: na frente de tudo, mas sem interromper um vídeo (aparece ao sair dele)
+                        else UpdateDialog(session) { player.stop() }
                     }
                 }
             }

@@ -19,7 +19,7 @@ plugins {
     id("org.jetbrains.compose") version "1.7.3"
 }
 
-val appVersion = "0.1.6"
+val appVersion = "0.1.7"
 val edicao = (findProperty("edicao") as String?) ?: "pecbox"
 
 data class Edicao(
@@ -79,6 +79,8 @@ val gerarEdicao by tasks.registering {
             |    const val LOCK_SERVER = ${cfg.travaServidor}
             |    const val ADMIN_WHATSAPP = ${q(cfg.whatsapp)}
             |    const val ADMIN_WHATSAPP_LABEL = ${q(cfg.whatsappLabel)}
+            |    // Instaladores novos (as duas edições ficam na mesma pasta; o nome do arquivo diz qual é qual)
+            |    const val UPDATE_INDEX = "https://midia.pecbox.com.br/downloads/files/desktop/"
             |}
             |""".trimMargin()
         )
