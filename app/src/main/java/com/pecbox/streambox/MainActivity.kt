@@ -12,6 +12,7 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.lifecycle.lifecycleScope
 import com.pecbox.streambox.ui.Idle
 import com.pecbox.streambox.ui.ScreenSaverHost
+import com.pecbox.streambox.ui.UpdateDialog
 import kotlinx.coroutines.launch
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -37,6 +38,7 @@ class MainActivity : ComponentActivity() {
                 Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
                     if (App.session.loggedIn) ScreenSaverHost { AppShell() } else LoginScreen()
                 }
+                UpdateDialog()
             }
         }
         // Mantém a tela ligada enquanto a proteção roda (no máximo 1 h; depois o sistema pode desligar a tela)

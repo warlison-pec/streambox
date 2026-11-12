@@ -5,6 +5,7 @@ import com.pecbox.streambox.App
 import com.pecbox.streambox.BuildConfig
 import com.pecbox.streambox.ui.Notices
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
@@ -14,6 +15,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.int
@@ -39,17 +41,22 @@ object Notifier {
     private val s get() = App.session
     private val checkLock = Mutex()
     private var job: Job? = null
-    private var lastUpdateCheck = 0L
 
     fun start() {
         if (job?.isActive == true) return
         job = App.scope.launch {
+            // Nova versão: confere toda vez que o app volta para a tela (até no login) e depois a cada 6 h
+            launch {
+                while (isActive) {
+                    runCatching { checkUpdate() }
+                    delay(UPDATE_INTERVAL_MS)
+                }
+            }
             snapshotFlow { s.loggedIn }.distinctUntilChanged().collectLatest { logged ->
                 if (logged) coroutineScope {
                     launch { socketLoop() }
                     while (isActive) {
                         runCatching { checkContent() }
-                        if (System.currentTimeMillis() - lastUpdateCheck >= UPDATE_INTERVAL_MS) runCatching { checkUpdate() }
                         delay(CONTENT_INTERVAL_MS)
                     }
                 }
@@ -199,13 +206,18 @@ object Notifier {
     }
 
     private suspend fun checkUpdate() {
-        lastUpdateCheck = System.currentTimeMillis()
         val listing = s.http.fetch(Request.Builder().url(BuildConfig.UPDATE_INDEX).build())
         val file = AppUpdate.FILE_NAME.findAll(listing)
             .maxWithOrNull { a, b -> compareVersions(a.groupValues[1], b.groupValues[1]) } ?: return
         val newest = file.groupValues[1]
-        if (compareVersions(newest, BuildConfig.VERSION_NAME) <= 0 || newest == s.updateNotified) return
+        if (compareVersions(newest, BuildConfig.VERSION_NAME) <= 0) return
+        val url = BuildConfig.UPDATE_INDEX + file.value
+        // A caixa aparece sempre que o app abre desatualizado; o aviso no histórico, uma vez só
+        withContext(Dispatchers.Main) {
+            if (AppUpdate.available?.version != newest) AppUpdate.available = AppUpdate.Available(newest, url)
+        }
+        if (newest == s.updateNotified) return
         s.updateNotified = newest
-        post(Notice.UPDATE, "Nova versão disponível", "StreamBox $newest está pronto. Toque para baixar e instalar.", url = BuildConfig.UPDATE_INDEX + file.value)
+        post(Notice.UPDATE, "Nova versão disponível", "StreamBox $newest está pronto. Toque para baixar e instalar.", url = url)
     }
 }

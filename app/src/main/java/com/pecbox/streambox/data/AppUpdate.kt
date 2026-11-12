@@ -29,7 +29,16 @@ object AppUpdate {
     /** Texto do andamento, mostrado no aviso; null = nada em curso. */
     var status by mutableStateOf<String?>(null)
         private set
-    private var busy = false
+    private var busy by mutableStateOf(false)
+
+    /** Versão mais nova encontrada no servidor; não-null = mostra a caixa de atualização na frente da tela. */
+    class Available(val version: String, val url: String)
+    var available by mutableStateOf<Available?>(null)
+
+    val downloading get() = busy
+
+    /** "Depois": some até o app ser aberto de novo (a próxima conferência traz a caixa de volta). */
+    fun dismiss() { if (!busy) { available = null; status = null } }
 
     /** Só a pasta oficial de atualizações pode instalar: avisos também vêm de mensagens do servidor. */
     fun isUpdateUrl(url: String?): Boolean =
@@ -39,7 +48,7 @@ object AppUpdate {
         if (busy || !isUpdateUrl(url)) return
         val ctx = context.applicationContext
         if (needsAuthorization(ctx)) {
-            Toast.makeText(ctx, "Autorize o StreamBox a instalar apps e toque no aviso de novo", Toast.LENGTH_LONG).show()
+            Toast.makeText(ctx, "Autorize o StreamBox a instalar apps e volte para tocar em Atualizar", Toast.LENGTH_LONG).show()
             if (openAuthorization(ctx)) return     // sem essa tela (algumas TVs), tenta instalar assim mesmo
         }
         busy = true
