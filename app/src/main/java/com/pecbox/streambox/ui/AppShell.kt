@@ -138,10 +138,12 @@ fun AppShell() {
     val nav = remember { Nav(stack) }
     val holder = rememberSaveableStateHolder()
     BackHandler(enabled = stack.size > 1) { nav.back() }
+    // Voltar numa aba (Ajustes, Avisos, Buscar…) leva ao Início; no Início, sai do app
+    BackHandler(enabled = stack.size == 1 && stack.first() != Route.Home) { nav.root(Route.Home) }
     LaunchedEffect(App.session.userId) {
         MyRequests.ensureLoaded()
-        // Pedidos feitos pelo Seerr em outro aparelho também liberam a aba "Pedidos"
-        if (App.session.seerr.enabled) runCatching { MyRequests.views() }
+        // Confere nos servidores (STRM e Seerr) se esta pessoa tem pedidos: só então a aba aparece
+        runCatching { MyRequests.views(force = true) }
     }
 
     val views = rememberLoader("views") { jf.views() }
@@ -185,7 +187,7 @@ fun AppShell() {
 
     Box(Modifier.fillMaxSize()) {
         if (tv) {
-            TvDrawerShell(top, rootKey, showUnread = current == Route.Home, onSelect = { nav.root(it) }, content = content)
+            TvDrawerShell(top, rootKey, current.key, showUnread = current == Route.Home, onSelect = { nav.root(it) }, content = content)
         } else {
             Scaffold(
                 containerColor = MaterialTheme.colorScheme.background,
@@ -225,7 +227,7 @@ fun AppShell() {
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
 private fun TvDrawerShell(
-    items: List<TopItem>, selectedKey: String, showUnread: Boolean,
+    items: List<TopItem>, selectedKey: String, screenKey: String, showUnread: Boolean,
     onSelect: (Route) -> Unit, content: @Composable () -> Unit,
 ) {
     var open by remember { mutableStateOf(false) }
@@ -236,15 +238,29 @@ private fun TvDrawerShell(
     val selectedFocus = remember { FocusRequester() }
     val firstFocus = remember { FocusRequester() }
 
-    fun close() {
-        open = false
-        // devolve o foco ao último item da tela (focusRestorer); se não der, entra no primeiro item
-        runCatching { contentFocus.requestFocus() }
-        scope.launch {
+    /**
+     * Garante que algum item da tela tem foco. Sem isso, ao trocar de tela pelo menu o foco
+     * sumia (telas como Ajustes e Avisos não pedem foco sozinhas) e nenhuma tecla funcionava.
+     */
+    suspend fun ensureContentFocus() {
+        repeat(4) {
             withFrameNanos { }
-            if (!contentHasFocus) focusManager.moveFocus(FocusDirection.Enter)
+            if (open || contentHasFocus) return
+            when (it) {
+                0, 2 -> runCatching { contentFocus.requestFocus() }      // volta ao último item (focusRestorer)
+                else -> focusManager.moveFocus(FocusDirection.Next)       // primeiro item da tela
+            }
         }
     }
+
+    fun close() {
+        open = false
+        runCatching { contentFocus.requestFocus() }
+        scope.launch { ensureContentFocus() }
+    }
+
+    // Tela nova (pelo menu, por um cartão ou pelo Voltar): confere se o foco chegou nela
+    LaunchedEffect(screenKey) { ensureContentFocus() }
 
     BackHandler(enabled = open) { close() }
     LaunchedEffect(open) {
@@ -292,7 +308,7 @@ private fun TvDrawerShell(
                 items, selectedKey, selectedFocus, firstFocus, focusable = open,
                 onSelect = { r -> onSelect(r); close() },
                 onClose = { close() },
-                onFocusLost = { if (open) open = false },
+                onFocusLost = { if (open) close() },
             )
         }
     }

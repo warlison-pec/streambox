@@ -78,35 +78,46 @@ object MyRequests {
     }
 
     private suspend fun load(): List<RequestView> = coroutineScope {
-        val merged = LinkedHashMap<String, Pair<MyRequest, SeerrRequestFull?>>()
-        local.toList().forEach { merged[it.key] = it to null }
+        val merged = LinkedHashMap<String, Triple<MyRequest, SeerrRequestFull?, IndexerRequest?>>()
+        local.toList().forEach { merged[it.key] = Triple(it, null, null) }
 
-        if (s.seerr.enabled) {
-            val remote = runCatching { s.seerr.myRequests() }.getOrNull()
-            if (remote != null) {
-                remoteCount = remote.size
-                s.remoteRequestCount = remote.size
-                remote.map { e ->
-                    async {
-                        val tmdb = e.media?.tmdbId ?: return@async null
-                        val tv = e.type == "tv" || e.media.mediaType == "tv"
-                        val kind = if (tv) "series" else "movie"
-                        val key = seerrKey(kind, tmdb)
-                        val known = merged[key]?.first
-                        val req = known ?: runCatching { s.seerr.details(if (tv) "tv" else "movie", tmdb) }.getOrNull()?.let { d ->
-                            MyRequest(key, "seerr", kind, d.displayTitle, d.year?.toIntOrNull(), d.poster, parseTime(e.createdAt), tmdbId = tmdb)
-                        } ?: return@async null
-                        key to (req to e)
-                    }
-                }.awaitAll().filterNotNull().forEach { (k, v) -> merged[k] = v }
+        // Os dois servidores devolvem só os pedidos desta pessoa (de qualquer aparelho)
+        val strmJob = async { if (s.indexer.enabled) runCatching { s.indexer.mine() }.getOrNull() else emptyList() }
+        val seerrJob = async { if (s.seerr.identifiesUser) runCatching { s.seerr.myRequests() }.getOrNull() else emptyList() }
+        val strm = strmJob.await()
+        val seerr = seerrJob.await()
+
+        strm.orEmpty().forEach { r ->
+            val kind = if (r.kind == "movie") "movie" else "series"
+            val key = strmKey(kind, r.title)
+            val known = merged[key]?.first
+            val req = known?.copy(remoteId = r.id) ?: MyRequest(key, "strm", kind, r.title, r.year, null, (r.createdAt * 1000).toLong(), remoteId = r.id)
+            merged[key] = Triple(req, null, r)
+        }
+        seerr.orEmpty().map { e ->
+            async {
+                val tmdb = e.media?.tmdbId ?: return@async null
+                val tv = e.type == "tv" || e.media.mediaType == "tv"
+                val kind = if (tv) "series" else "movie"
+                val key = seerrKey(kind, tmdb)
+                val req = merged[key]?.first ?: runCatching { s.seerr.details(if (tv) "tv" else "movie", tmdb) }.getOrNull()?.let { d ->
+                    MyRequest(key, "seerr", kind, d.displayTitle, d.year?.toIntOrNull(), d.poster, parseTime(e.createdAt), tmdbId = tmdb)
+                } ?: return@async null
+                key to Triple(req, e, null)
             }
+        }.awaitAll().filterNotNull().forEach { (k, v) -> merged[k] = v }
+
+        // Só conta o que os servidores responderam; se um falhou, mantém a contagem anterior
+        if (strm != null && seerr != null) {
+            remoteCount = strm.size + seerr.size
+            s.remoteRequestCount = remoteCount
         }
 
-        merged.values.map { (req, seerr) -> async { resolve(req, seerr) } }.awaitAll()
+        merged.values.map { (req, se, ix) -> async { resolve(req, se, ix) } }.awaitAll()
             .sortedByDescending { it.request.time }
     }
 
-    private suspend fun resolve(req: MyRequest, seerr: SeerrRequestFull?): RequestView {
+    private suspend fun resolve(req: MyRequest, seerr: SeerrRequestFull?, strm: IndexerRequest?): RequestView {
         val jf = s.jellyfin
         val item = seerr?.media?.jellyfinMediaId?.let { id -> runCatching { jf.item(id) }.getOrNull() }
             ?: runCatching { jf.findTitle(req.title, req.kind, req.year) }.getOrNull()
@@ -124,8 +135,8 @@ object MyRequests {
         }
         val remoteId = req.remoteId
         if (req.source == "strm" && remoteId != null && s.indexer.enabled) {
-            val st = runCatching { s.indexer.status(remoteId) }.getOrNull()
-            if (st != null) return when (st.state) {
+            val state = strm?.state ?: runCatching { s.indexer.status(remoteId) }.getOrNull()?.state
+            if (state != null) return when (state) {
                 "queued" -> RequestView(req, RequestState.WAITING, "Na fila", null)
                 "validating" -> RequestView(req, RequestState.PROGRESS, "Validando", null)
                 "importing" -> RequestView(req, RequestState.PROGRESS, "Importando", null)

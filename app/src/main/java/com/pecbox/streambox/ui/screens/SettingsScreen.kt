@@ -284,14 +284,12 @@ private fun NoticeSettings() {
         s.noticeMuted = muted
     }
     Text("Avisos", style = MaterialTheme.typography.titleLarge)
-    Text("Escolha o que deve gerar aviso. Tudo continua no histórico de Avisos.", color = TextMuted)
+    Text("Escolha o que deve gerar aviso. Mensagens do servidor e novas versões do app sempre chegam.", color = TextMuted)
     ToggleLine("Mostrar na tela", "Cartão no canto da tela por alguns segundos. Mensagens do servidor sempre aparecem.", banner) {
         banner = it; s.noticeBanner = it
     }
     ToggleLine("Novidades do catálogo", "Filmes, séries e episódios novos.", Notice.NEW !in muted) { setKind(Notice.NEW, it) }
     ToggleLine("Seus pedidos", "Quando um título que você pediu chega.", Notice.REQUESTED !in muted) { setKind(Notice.REQUESTED, it) }
-    ToggleLine("Mensagens do servidor", "Enviadas pelo administrador no painel do Jellyfin.", Notice.MESSAGE !in muted) { setKind(Notice.MESSAGE, it) }
-    ToggleLine("Novas versões do app", null, Notice.UPDATE !in muted) { setKind(Notice.UPDATE, it) }
 }
 
 @Composable

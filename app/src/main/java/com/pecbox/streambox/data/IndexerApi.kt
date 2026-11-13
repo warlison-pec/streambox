@@ -39,6 +39,12 @@ class IndexerApi(private val s: Session) {
         return AppJson.decodeFromString(RequestCreated.serializer(), text)
     }
 
+    /** Pedidos deste usuário do Jellyfin (de qualquer aparelho), mais recentes primeiro. */
+    suspend fun mine(): List<IndexerRequest> {
+        val text = s.http.fetch(request("/mine").build())
+        return AppJson.decodeFromString(IndexerMine.serializer(), text).items
+    }
+
     suspend fun status(id: String): RequestStatus {
         val text = s.http.fetch(request("/status?id=$id").build())
         return AppJson.decodeFromString(RequestStatus.serializer(), text)

@@ -148,8 +148,8 @@ class Session(context: Context) {
 
     /** Quantos pedidos o Seerr tinha na última consulta (para mostrar a aba Pedidos logo ao abrir). */
     var remoteRequestCount: Int
-        get() = prefs.getInt("remote_requests_$userId", 0)
-        set(v) = prefs.edit().putInt("remote_requests_$userId", v).apply()
+        get() = prefs.getInt("remote_requests2_$userId", 0)
+        set(v) = prefs.edit().putInt("remote_requests2_$userId", v).apply()
 
     /** Proteção de tela: minutos sem uso até iniciar (0 = desligada). */
     var screensaverMinutes: Int

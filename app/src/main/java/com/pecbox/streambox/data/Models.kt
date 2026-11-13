@@ -272,7 +272,7 @@ data class SeerrUser(
 data class SeerrRequestMedia(val tmdbId: Int? = null)
 
 @Serializable
-data class SeerrRequestEntry(val media: SeerrRequestMedia? = null)
+data class SeerrRequestEntry(val media: SeerrRequestMedia? = null, val requestedBy: SeerrUser? = null)
 
 @Serializable
 data class SeerrRequests(val results: List<SeerrRequestEntry> = emptyList())
@@ -282,6 +282,7 @@ data class SeerrRequests(val results: List<SeerrRequestEntry> = emptyList())
 data class SeerrRequestFull(
     val id: Int = 0,
     val status: Int = 1,
+    val requestedBy: SeerrUser? = null,
     val type: String = "",
     val createdAt: String? = null,
     val media: SeerrMediaFull? = null,
@@ -298,6 +299,22 @@ data class SeerrMediaFull(
 
 @Serializable
 data class SeerrRequestsFull(val results: List<SeerrRequestFull> = emptyList())
+
+/** Pedido do STRM Indexer (rota /mine: só os do próprio usuário do Jellyfin). */
+@Serializable
+data class IndexerRequest(
+    val id: String = "",
+    val kind: String = "",
+    val title: String = "",
+    val year: Int? = null,
+    val season: Int? = null,
+    val state: String = "",
+    val message: String = "",
+    @SerialName("created_at") val createdAt: Double = 0.0,
+)
+
+@Serializable
+data class IndexerMine(val items: List<IndexerRequest> = emptyList())
 
 /* ----------------------------- Meus pedidos ----------------------------- */
 

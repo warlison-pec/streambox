@@ -52,18 +52,29 @@ class SeerrApi(private val s: Session) {
         return AppJson.decodeFromString(SeerrUser.serializer(), text).label.also { s.seerrUser = it }
     }
 
+    /**
+     * Só dá para saber quem pediu quando o login é com a conta do Jellyfin: com a chave de API
+     * todo pedido sai como administrador, então não há pedidos "da pessoa" para mostrar.
+     */
+    val identifiesUser: Boolean get() = enabled && s.seerrApiKey.isBlank() && s.seerrCookie.isNotBlank()
+
     /** Códigos TMDB de tudo que este usuário pediu no Seerr. */
     suspend fun requestedTmdbIds(): Set<Int> {
+        if (!identifiesUser) return emptySet()
         val me = AppJson.decodeFromString(SeerrUser.serializer(), s.http.fetch(request("/auth/me").build()))
         val text = s.http.fetch(request("/request?take=200&sort=modified&requestedBy=${me.id}").build())
-        return AppJson.decodeFromString(SeerrRequests.serializer(), text).results.mapNotNull { it.media?.tmdbId }.toSet()
+        // Administrador recebe os pedidos de todos: filtra pelo autor
+        return AppJson.decodeFromString(SeerrRequests.serializer(), text).results
+            .filter { it.requestedBy?.id == me.id }.mapNotNull { it.media?.tmdbId }.toSet()
     }
 
     /** Pedidos deste usuário no Seerr, com o status de cada um (mais recentes primeiro). */
-    suspend fun myRequests(take: Int = 50): List<SeerrRequestFull> {
+    suspend fun myRequests(take: Int = 100): List<SeerrRequestFull> {
+        if (!identifiesUser) return emptyList()
         val me = AppJson.decodeFromString(SeerrUser.serializer(), s.http.fetch(request("/auth/me").build()))
         val text = s.http.fetch(request("/request?take=$take&sort=added&requestedBy=${me.id}").build())
-        return AppJson.decodeFromString(SeerrRequestsFull.serializer(), text).results
+        // Administrador recebe os pedidos de todos: fica só com os que esta pessoa fez
+        return AppJson.decodeFromString(SeerrRequestsFull.serializer(), text).results.filter { it.requestedBy?.id == me.id }
     }
 
     /** Nome, ano e capa de um filme ("movie") ou série ("tv") pelo código TMDB. */

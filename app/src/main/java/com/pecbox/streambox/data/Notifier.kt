@@ -143,7 +143,8 @@ object Notifier {
     }
 
     private fun post(kind: String, title: String, text: String, itemId: String? = null, url: String? = null, image: String? = null) {
-        if (kind in s.noticeMuted) return
+        // Mensagens do servidor e novas versões sempre chegam; novidades e pedidos podem ser desligados
+        if ((kind == Notice.NEW || kind == Notice.REQUESTED) && kind in s.noticeMuted) return
         Notices.post(Notice(UUID.randomUUID().toString(), kind, title, text, System.currentTimeMillis(), itemId, url, image = image))
     }
 
