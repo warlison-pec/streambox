@@ -116,6 +116,41 @@ class Session(context: Context) {
         get() = prefs.getBoolean("hide_watched_home", true)
         set(v) = prefs.edit().putBoolean("hide_watched_home", v).apply()
 
+    /** Ordem das fileiras da tela inicial (chaves de [HomeSections]); as que faltarem vão para o fim. */
+    var homeOrder: List<String>
+        get() {
+            val saved = prefs.getString("home_order", null)?.split(',')?.filter { it in HomeSections.DEFAULT_ORDER }.orEmpty()
+            return (saved + HomeSections.DEFAULT_ORDER).distinct()
+        }
+        set(v) = prefs.edit().putString("home_order", v.joinToString(",")).apply()
+
+    /** Fileiras da tela inicial que o usuário desligou. */
+    var homeHidden: Set<String>
+        get() = prefs.getStringSet("home_hidden", emptySet()).orEmpty()
+        set(v) = prefs.edit().putStringSet("home_hidden", v).apply()
+
+    fun homeShows(section: String) = section !in homeHidden
+
+    /** Avisos: faixa que aparece no canto da tela. */
+    var noticeBanner: Boolean
+        get() = prefs.getBoolean("notice_banner", true)
+        set(v) = prefs.edit().putBoolean("notice_banner", v).apply()
+
+    /** Tipos de aviso desligados (Notice.NEW, REQUESTED, MESSAGE, UPDATE). */
+    var noticeMuted: Set<String>
+        get() = prefs.getStringSet("notice_muted", emptySet()).orEmpty()
+        set(v) = prefs.edit().putStringSet("notice_muted", v).apply()
+
+    /** Pedidos feitos neste aparelho (JSON), por usuário. */
+    var myRequestsJson: String
+        get() = prefs.getString("my_requests_$userId", "") ?: ""
+        set(v) = prefs.edit().putString("my_requests_$userId", v).apply()
+
+    /** Quantos pedidos o Seerr tinha na última consulta (para mostrar a aba Pedidos logo ao abrir). */
+    var remoteRequestCount: Int
+        get() = prefs.getInt("remote_requests_$userId", 0)
+        set(v) = prefs.edit().putInt("remote_requests_$userId", v).apply()
+
     /** Proteção de tela: minutos sem uso até iniciar (0 = desligada). */
     var screensaverMinutes: Int
         get() = prefs.getInt("screensaver_min", 5)

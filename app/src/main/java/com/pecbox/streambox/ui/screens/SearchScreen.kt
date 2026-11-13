@@ -33,7 +33,8 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.pecbox.streambox.App
-import com.pecbox.streambox.data.Notifier
+import com.pecbox.streambox.data.MyRequest
+import com.pecbox.streambox.data.MyRequests
 import com.pecbox.streambox.data.IndexerItem
 import com.pecbox.streambox.data.Item
 import com.pecbox.streambox.data.SeerrResult
@@ -205,8 +206,16 @@ private fun RequestCard(item: IndexerItem, width: Dp) {
                         item.seasons.size == 1 -> item.seasons[0]
                         else -> null
                     }
-                    requestId = idx.request(item, season).id
-                    App.session.addRequestedTitle(Notifier.normalizeTitle(item.title))
+                    val created = idx.request(item, season)
+                    requestId = created.id
+                    MyRequests.record(
+                        MyRequest(
+                            key = MyRequests.strmKey(if (item.kind == "movie") "movie" else "series", item.title),
+                            source = "strm", kind = if (item.kind == "movie") "movie" else "series",
+                            title = item.title, year = item.year ?: item.catalogYear, poster = idx.art(item.poster),
+                            time = System.currentTimeMillis(), remoteId = created.id,
+                        )
+                    )
                 } catch (e: Exception) {
                     state = ""
                     message = e.friendly()
@@ -286,6 +295,14 @@ private fun SeerrCard(item: SeerrResult, width: Dp) {
                     val list = seasons
                     val chosen = if (isTv && list != null && seasonIndex >= 0) listOf(list[seasonIndex]) else null
                     seerr.request(item, chosen)
+                    val kind = if (isTv) "series" else "movie"
+                    MyRequests.record(
+                        MyRequest(
+                            key = MyRequests.seerrKey(kind, item.id), source = "seerr", kind = kind,
+                            title = item.displayTitle, year = item.year?.toIntOrNull(), poster = item.poster,
+                            time = System.currentTimeMillis(), tmdbId = item.id,
+                        )
+                    )
                     state = "requested"
                     message = "Pedido enviado ao Seerr."
                 } catch (e: Exception) {

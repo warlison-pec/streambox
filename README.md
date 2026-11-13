@@ -4,7 +4,7 @@ Cliente Android leve para Jellyfin, com **um único APK para celular e TV** (And
 
 - Kotlin + Jetpack Compose, sem SDK pesado: OkHttp + kotlinx.serialization
 - Player Media3/ExoPlayer: toca o arquivo original e, se o aparelho não suportar o formato, pede conversão HLS ao servidor
-- Interface adaptativa: menu lateral e foco por controle remoto na TV, barra inferior no celular
+- Interface adaptativa: na TV a tela usa a largura toda e o menu lateral fica escondido (abre com ← quando não há mais nada à esquerda); barra inferior no celular
 - Tema preto e laranja
 
 ## Funções (v0.3)
@@ -12,7 +12,9 @@ Cliente Android leve para Jellyfin, com **um único APK para celular e TV** (And
 | Tela | O que faz |
 |---|---|
 | Login | Endereço do servidor + usuário/senha do Jellyfin |
-| Início | Destaque, Continuar assistindo, Próximos episódios, Adicionados recentemente por biblioteca |
+| Início | Destaque, Continuar assistindo, Próximo episódio, Para você que assistiu… (sugestões pelo histórico), Seu pedido chegou, Minha lista, Adicionados recentemente. Ordem e quais aparecem: em Ajustes → Tela inicial |
+| Pedidos | Tudo o que a pessoa pediu (STRM Indexer e Seerr) com a situação de cada pedido. Só aparece para quem já pediu algo |
+| Avisos | Novidades (filme, série nova, episódio novo), pedidos que chegaram, mensagens do servidor e novas versões; filtros por tipo e escolha do que gera aviso em Ajustes |
 | Filmes / Séries | Grade paginada com ordenação (A–Z, recentes, lançamento, avaliação) |
 | Detalhes | Fundo, pôster, sinopse, Continuar / Do início, temporadas e episódios com progresso |
 | Buscar | Resultados da biblioteca + **Disponível para solicitar** (STRM Indexer) com acompanhamento do pedido |

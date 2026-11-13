@@ -30,6 +30,7 @@ data class UserData(
     @SerialName("Played") val played: Boolean = false,
     @SerialName("UnplayedItemCount") val unplayed: Int? = null,
     @SerialName("IsFavorite") val isFavorite: Boolean = false,
+    @SerialName("LastPlayedDate") val lastPlayed: String? = null,
 )
 
 @Serializable
@@ -276,6 +277,44 @@ data class SeerrRequestEntry(val media: SeerrRequestMedia? = null)
 @Serializable
 data class SeerrRequests(val results: List<SeerrRequestEntry> = emptyList())
 
+/** Pedido do Seerr com status. request.status: 1 aguardando · 2 aprovado · 3 recusado. */
+@Serializable
+data class SeerrRequestFull(
+    val id: Int = 0,
+    val status: Int = 1,
+    val type: String = "",
+    val createdAt: String? = null,
+    val media: SeerrMediaFull? = null,
+)
+
+/** media.status: 1 desconhecido · 2 pendente · 3 processando · 4 parcialmente disponível · 5 disponível */
+@Serializable
+data class SeerrMediaFull(
+    val tmdbId: Int? = null,
+    val mediaType: String = "",
+    val status: Int = 1,
+    val jellyfinMediaId: String? = null,
+)
+
+@Serializable
+data class SeerrRequestsFull(val results: List<SeerrRequestFull> = emptyList())
+
+/* ----------------------------- Meus pedidos ----------------------------- */
+
+/** Pedido feito neste aparelho (STRM Indexer ou Seerr), guardado para a aba "Pedidos". */
+@Serializable
+data class MyRequest(
+    val key: String,                    // origem:tipo:identificador (sem repetição)
+    val source: String,                 // "strm" | "seerr"
+    val kind: String,                   // "movie" | "series"
+    val title: String,
+    val year: Int? = null,
+    val poster: String? = null,
+    val time: Long = 0,
+    val remoteId: String? = null,       // id do pedido no STRM Indexer
+    val tmdbId: Int? = null,
+)
+
 @Serializable
 data class SeerrSeason(val seasonNumber: Int = 0)
 
@@ -294,6 +333,7 @@ data class Notice(
     val itemId: String? = null,         // abre os detalhes deste item
     val url: String? = null,            // abre esta página
     val read: Boolean = false,
+    val image: String? = null,          // capa (novidades e pedidos)
 ) {
     companion object {
         const val MESSAGE = "message"   // enviada pelo painel do Jellyfin

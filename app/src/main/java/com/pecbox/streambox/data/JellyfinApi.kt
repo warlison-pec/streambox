@@ -245,6 +245,50 @@ class JellyfinApi(private val s: Session) {
         )
     ).items
 
+    /* ---------------- recomendações ---------------- */
+
+    /** Filmes e episódios já assistidos, do mais recente para o mais antigo. */
+    suspend fun recentlyPlayed(limit: Int = 40): List<Item> = items(
+        "/Items",
+        mapOf(
+            "userId" to s.userId, "recursive" to true, "includeItemTypes" to "Movie,Episode",
+            "filters" to "IsPlayed", "sortBy" to "DatePlayed", "sortOrder" to "Descending",
+            "limit" to limit, "fields" to "Genres", "enableTotalRecordCount" to false, "enableImages" to false,
+        )
+    ).items
+
+    /** Títulos parecidos segundo o próprio Jellyfin (gêneros, tags, estúdios e elenco em comum). */
+    suspend fun similar(itemId: String, limit: Int = 24): List<Item> = items(
+        "/Items/$itemId/Similar",
+        mapOf("userId" to s.userId, "limit" to limit, "fields" to FIELDS)
+    ).items
+
+    /** Títulos ainda não vistos que têm algum destes gêneros. */
+    suspend fun byGenres(genres: List<String>, types: String, limit: Int = 24): List<Item> = items(
+        "/Items",
+        mapOf(
+            "userId" to s.userId, "recursive" to true, "includeItemTypes" to types,
+            "genres" to genres.joinToString("|"), "isPlayed" to false, "sortBy" to "Random",
+            "limit" to limit, "fields" to FIELDS, "enableTotalRecordCount" to false,
+        )
+    ).items
+
+    /** Procura um filme ou série da biblioteca pelo nome (para saber se um pedido já chegou). */
+    suspend fun findTitle(title: String, kind: String, year: Int?): Item? {
+        val wanted = Notifier.normalizeTitle(title)
+        val type = if (kind == "series") "Series" else "Movie"
+        return items(
+            "/Items",
+            mapOf(
+                "userId" to s.userId, "searchTerm" to title, "recursive" to true,
+                "includeItemTypes" to type, "limit" to 20, "fields" to FIELDS,
+            )
+        ).items
+            .filter { Notifier.normalizeTitle(it.name) == wanted }
+            .minByOrNull { if (year == null || it.year == null) 1 else kotlin.math.abs(it.year - year) * 2 }
+            ?.takeIf { year == null || it.year == null || kotlin.math.abs(it.year - year) <= 1 }
+    }
+
     /* ---------------- imagens (públicas, com cache por tag) ---------------- */
 
     fun primaryImage(item: Item, height: Int = 450): String? {
@@ -412,7 +456,7 @@ class JellyfinApi(private val s: Session) {
         "/Items",
         mapOf(
             "userId" to s.userId, "recursive" to true, "includeItemTypes" to "Movie,Episode",
-            "sortBy" to "DateCreated", "sortOrder" to "Descending", "limit" to limit, "fields" to "DateCreated,ProviderIds",
+            "sortBy" to "DateCreated", "sortOrder" to "Descending", "limit" to limit, "fields" to "DateCreated,ProviderIds,ParentId",
         )
     ).items
 

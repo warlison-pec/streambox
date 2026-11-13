@@ -59,6 +59,20 @@ class SeerrApi(private val s: Session) {
         return AppJson.decodeFromString(SeerrRequests.serializer(), text).results.mapNotNull { it.media?.tmdbId }.toSet()
     }
 
+    /** Pedidos deste usuário no Seerr, com o status de cada um (mais recentes primeiro). */
+    suspend fun myRequests(take: Int = 50): List<SeerrRequestFull> {
+        val me = AppJson.decodeFromString(SeerrUser.serializer(), s.http.fetch(request("/auth/me").build()))
+        val text = s.http.fetch(request("/request?take=$take&sort=added&requestedBy=${me.id}").build())
+        return AppJson.decodeFromString(SeerrRequestsFull.serializer(), text).results
+    }
+
+    /** Nome, ano e capa de um filme ("movie") ou série ("tv") pelo código TMDB. */
+    suspend fun details(mediaType: String, tmdbId: Int): SeerrResult {
+        val path = if (mediaType == "tv") "/tv/$tmdbId" else "/movie/$tmdbId"
+        val text = s.http.fetch(request("$path?language=pt-BR").build())
+        return AppJson.decodeFromString(SeerrResult.serializer(), text)
+    }
+
     fun logout() {
         s.seerrCookie = ""
         s.seerrApiKey = ""

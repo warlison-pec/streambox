@@ -245,3 +245,25 @@ fun ErrorBox(message: String, onRetry: (() -> Unit)? = null, modifier: Modifier 
         }
     }
 }
+
+/** Interruptor liga/desliga que funciona com toque e controle remoto. */
+@Composable
+fun SbToggle(checked: Boolean, onChange: (Boolean) -> Unit, modifier: Modifier = Modifier, label: String? = null) {
+    val shape = RoundedCornerShape(50)
+    val offset by androidx.compose.animation.core.animateDpAsState(if (checked) 20.dp else 0.dp, label = "toggle")
+    Row(
+        modifier.tvFocus(shape, 1.06f).clip(shape).clickable { onChange(!checked) }.padding(4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        if (label != null) Text(label, color = if (checked) TextMain else TextMuted, style = MaterialTheme.typography.labelLarge)
+        Box(
+            Modifier.width(44.dp).height(24.dp).clip(shape).background(if (checked) Orange else Surface3).padding(2.dp)
+        ) {
+            Box(
+                Modifier.padding(start = offset).size(20.dp).clip(CircleShape)
+                    .background(if (checked) Color.Black else TextMuted)
+            )
+        }
+    }
+}

@@ -142,12 +142,24 @@ object Notifier {
         post(Notice.MESSAGE, title, text)
     }
 
-    private fun post(kind: String, title: String, text: String, itemId: String? = null, url: String? = null) =
-        Notices.post(Notice(UUID.randomUUID().toString(), kind, title, text, System.currentTimeMillis(), itemId, url))
+    private fun post(kind: String, title: String, text: String, itemId: String? = null, url: String? = null, image: String? = null) {
+        if (kind in s.noticeMuted) return
+        Notices.post(Notice(UUID.randomUUID().toString(), kind, title, text, System.currentTimeMillis(), itemId, url, image = image))
+    }
 
     /* ---------------- novidades do catálogo ---------------- */
 
     private fun stamp(item: Item) = item.dateCreated.orEmpty().take(19)   // até os segundos: o resto varia de tamanho
+
+    /**
+     * Episódio mesmo quando o servidor ainda não ligou o arquivo à série (acontece logo depois
+     * da importação, principalmente com .strm): antes ele era anunciado como "Novo filme".
+     */
+    private fun isEpisodeLike(item: Item) =
+        item.isEpisode || item.seriesId != null || !item.seriesName.isNullOrBlank() || item.type == "Season" || item.type == "Series"
+
+    private fun groupKey(item: Item) =
+        item.seriesId ?: item.seriesName?.takeIf { it.isNotBlank() }?.let { "name:" + normalizeTitle(it) } ?: item.id
 
     private suspend fun checkContent() = checkLock.withLock {
         val latest = s.jellyfin.recentlyAdded()
@@ -157,40 +169,73 @@ object Notifier {
         // Primeira vez neste aparelho: só marca o ponto de partida, sem avisar do catálogo inteiro
         val fresh = if (baseline.isEmpty()) emptyList() else latest.filter { stamp(it) >= baseline && it.id !in seen }
         s.saveContentBaseline(newest, latest.filter { stamp(it) == newest }.map { it.id }.toSet())
-        if (fresh.isNotEmpty()) announce(fresh.groupBy { it.seriesId ?: it.id }.values.toList())
+        if (fresh.isNotEmpty()) announce(fresh.groupBy(::groupKey).values.map { describeGroup(it, baseline) })
     }
 
-    private suspend fun announce(groups: List<List<Item>>) {
+    /** O que chegou, já com o tipo certo: filme, série nova, episódio novo ou vários episódios. */
+    private class Arrival(
+        val items: List<Item>, val owner: Item, val isSeries: Boolean, val newSeries: Boolean,
+        val title: String, val text: String,
+    )
+
+    private suspend fun describeGroup(group: List<Item>, baseline: String): Arrival {
+        val first = group.first()
+        if (!isEpisodeLike(first)) {
+            val text = listOfNotNull(first.name, first.year?.toString()).joinToString(" · ")
+            return Arrival(group, first, isSeries = false, newSeries = false, title = "Novo filme", text = text)
+        }
+        // Episódio: busca a série para ter nome, capa e saber se ela própria é nova no catálogo
+        val series = first.seriesId?.let { runCatching { s.jellyfin.item(it) }.getOrNull() }
+        val owner = series ?: first
+        val name = series?.name ?: first.seriesName ?: first.name
+        val newSeries = series != null && stamp(series).isNotEmpty() && stamp(series) >= baseline
+        val episodes = group.filter { it.isEpisode }.sortedWith(compareBy({ it.seasonNumber ?: 0 }, { it.indexNumber ?: 0 }))
+        val seasons = episodes.mapNotNull { it.seasonNumber }.distinct()
+        val seasonLabel = when (seasons.size) {
+            0 -> null
+            1 -> "Temporada ${seasons[0]}"
+            else -> "Temporadas ${seasons.first()}–${seasons.last()}"
+        }
+        val (title, detail) = when {
+            newSeries -> "Nova série" to listOfNotNull(seasonLabel, episodes.size.takeIf { it > 0 }?.let { if (it == 1) "1 episódio" else "$it episódios" }).joinToString(" · ")
+            episodes.size == 1 -> "Novo episódio" to episodes[0].episodeLabel
+            else -> "Novos episódios" to listOfNotNull("${episodes.size.coerceAtLeast(group.size)} episódios", seasonLabel).joinToString(" · ")
+        }
+        return Arrival(group, owner, isSeries = true, newSeries = newSeries, title = title, text = listOf(name, detail).filter { it.isNotBlank() }.joinToString(" · "))
+    }
+
+    private suspend fun announce(arrivals: List<Arrival>) {
         val tmdbIds = if (s.seerr.enabled) runCatching { s.seerr.requestedTmdbIds() }.getOrDefault(emptySet()) else emptySet()
-        val requested = groups.filter { isRequested(it.first(), tmdbIds) }
-        requested.forEach { g -> post(Notice.REQUESTED, "Seu pedido chegou", describe(g), itemId = ownerId(g.first())) }
-        val others = groups - requested.toSet()
+        val requested = arrivals.filter { isRequested(it, tmdbIds) }
+        requested.forEach { a ->
+            post(Notice.REQUESTED, "Seu pedido chegou", a.text, itemId = a.owner.id, image = poster(a.owner))
+        }
+        val others = arrivals - requested.toSet()
         if (others.size <= MAX_SINGLE_NOTICES) {
-            others.forEach { g -> post(Notice.NEW, if (g.first().seriesId != null) "Novo no catálogo" else "Novo filme", describe(g), itemId = ownerId(g.first())) }
+            others.forEach { a -> post(Notice.NEW, a.title, a.text, itemId = a.owner.id, image = poster(a.owner)) }
         } else {
-            val names = others.take(2).joinToString(", ") { titleOf(it.first()) }
-            post(Notice.NEW, "Novidades no catálogo", "$names e mais ${others.size - 2}")
+            val movies = others.count { !it.isSeries }
+            val shows = others.size - movies
+            val counts = listOfNotNull(
+                movies.takeIf { it > 0 }?.let { if (it == 1) "1 filme" else "$it filmes" },
+                shows.takeIf { it > 0 }?.let { if (it == 1) "1 série" else "$it séries" },
+            ).joinToString(" e ")
+            val names = others.take(3).joinToString(", ") { titleOf(it.owner) }
+            val rest = (others.size - 3).takeIf { it > 0 }?.let { " e mais $it" }.orEmpty()
+            post(Notice.NEW, "Novidades no catálogo", "$counts · $names$rest", image = poster(others.first().owner))
         }
     }
 
     private fun titleOf(item: Item) = item.seriesName ?: item.name
-    private fun ownerId(item: Item) = item.seriesId ?: item.id
 
-    private fun describe(group: List<Item>): String {
-        val first = group.first()
-        return when {
-            first.seriesId == null -> first.name
-            group.size == 1 -> "${titleOf(first)} · ${first.episodeLabel}"
-            else -> "${titleOf(first)} · ${group.size} novos episódios"
-        }
-    }
+    private fun poster(item: Item) = runCatching { s.jellyfin.posterImage(item, 240) }.getOrNull()
 
-    private suspend fun isRequested(item: Item, tmdbIds: Set<Int>): Boolean {
-        if (normalizeTitle(titleOf(item)) in s.requestedTitles) return true
+    private suspend fun isRequested(a: Arrival, tmdbIds: Set<Int>): Boolean {
+        if (normalizeTitle(titleOf(a.owner)) in s.requestedTitles) return true
         if (tmdbIds.isEmpty()) return false
-        // Episódios não trazem o código TMDB da série
-        val owner = item.seriesId?.let { runCatching { s.jellyfin.item(it) }.getOrNull() ?: return false } ?: item
-        return owner.providerIds["Tmdb"]?.toIntOrNull() in tmdbIds
+        val tmdb = a.owner.providerIds["Tmdb"]
+            ?: a.owner.takeIf { it.isEpisode }?.seriesId?.let { runCatching { s.jellyfin.item(it) }.getOrNull()?.providerIds?.get("Tmdb") }
+        return tmdb?.toIntOrNull() in tmdbIds
     }
 
     /* ---------------- nova versão do app ---------------- */

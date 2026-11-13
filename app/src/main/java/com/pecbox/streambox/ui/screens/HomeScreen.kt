@@ -81,7 +81,12 @@ import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import com.pecbox.streambox.App
 import com.pecbox.streambox.data.Item
+import com.pecbox.streambox.data.HomeSections
+import com.pecbox.streambox.data.MyRequests
+import com.pecbox.streambox.data.Recommendations
+import com.pecbox.streambox.data.RequestState
 import com.pecbox.streambox.data.libraryItemTypes
+import kotlinx.coroutines.withTimeoutOrNull
 import com.pecbox.streambox.play
 import com.pecbox.streambox.ui.Nav
 import com.pecbox.streambox.ui.Route
@@ -110,26 +115,48 @@ private data class HomeData(
     val nextUp: List<Item>,
     val favorites: List<Item>,
     val latest: List<Pair<String, List<Item>>>,
+    val because: List<Pair<String, List<Item>>> = emptyList(),   // "Para você que assistiu X"
+    val arrived: List<Item> = emptyList(),                       // "Seu pedido chegou"
 )
 
 @Composable
 fun HomeScreen(nav: Nav) {
     val jf = App.session.jellyfin
     val home = rememberLoader("home") {
+        val s = App.session
+        MyRequests.ensureLoaded()
         coroutineScope {
             val resume = async { runCatching { jf.resume() }.getOrDefault(emptyList()) }
             val next = async { runCatching { jf.nextUp() }.getOrDefault(emptyList()) }
             val favs = async { runCatching { jf.favorites() }.getOrDefault(emptyList()) }
             val movies = async { runCatching { jf.featured("Movie", 6) }.getOrDefault(emptyList()) }
             val series = async { runCatching { jf.featured("Series", 6) }.getOrDefault(emptyList()) }
+            // Pedidos que já chegaram ao catálogo (só para quem pediu algo)
+            val arrived = async {
+                if (!s.homeShows(HomeSections.ARRIVED) || !MyRequests.hasAny) emptyList()
+                else withTimeoutOrNull(12_000) {
+                    runCatching { MyRequests.views() }.getOrDefault(emptyList())
+                        .filter { it.state == RequestState.ARRIVED || it.state == RequestState.PARTIAL }
+                        .mapNotNull { it.item }.filter { it.userData?.played != true }.distinctBy { it.id }.take(20)
+                }.orEmpty()
+            }
             val libs = jf.views().filter { libraryItemTypes(it.collectionType) != null && it.collectionType != "boxsets" }
             val latest = libs.map { v ->
                 v.name to async { runCatching { jf.latest(v.id, libraryItemTypes(v.collectionType) ?: "Movie,Series") }.getOrDefault(emptyList()) }
             }
+            // Sugestões a partir do histórico: sem histórico, a fileira simplesmente não existe
+            val resumeList = resume.await()
+            val because = async {
+                if (!s.homeShows(HomeSections.BECAUSE)) emptyList()
+                else withTimeoutOrNull(12_000) { runCatching { Recommendations.forYou(jf, resumeList) }.getOrDefault(emptyList()) }.orEmpty()
+            }
             // Intercala filmes e séries nos destaques (até 12)
             val m = movies.await(); val sr = series.await()
             val featured = (0 until maxOf(m.size, sr.size)).flatMap { i -> listOfNotNull(m.getOrNull(i), sr.getOrNull(i)) }
-            HomeData(featured, resume.await(), next.await(), favs.await(), latest.map { (n, d) -> n to d.await() })
+            HomeData(
+                featured, resumeList, next.await(), favs.await(), latest.map { (n, d) -> n to d.await() },
+                because = because.await(), arrived = arrived.await(),
+            )
         }
     }
     // Player fechou: recarrega (o episódio terminado sai de "Próximos episódios" e de "Continuar")
@@ -149,6 +176,8 @@ fun HomeScreen(nav: Nav) {
     val homeData = raw?.let { d ->
         d.copy(
             featured = d.featured.unseen(), favorites = d.favorites.unseen(), latest = d.latest.map { (n, l) -> n to l.unseen() },
+            because = d.because.map { (n, l) -> n to l.filterNot { Watched.isPlayed(it) } },
+            arrived = d.arrived.filterNot { Watched.isPlayed(it) },
             // Episódio já assistido nunca fica em "Continuar" nem em "Próximos episódios"
             resume = d.resume.filterNot { Watched.isPlayed(it) },
             nextUp = d.nextUp.filterNot { Watched.isPlayed(it) },
@@ -209,61 +238,70 @@ private fun RowSpec(tv: TvRows?, content: @Composable () -> Unit) {
     if (tv == null) content() else CompositionLocalProvider(LocalBringIntoViewSpec provides tv.spec, content = content)
 }
 
-private fun LazyListScope.homeRows(data: HomeData, nav: Nav, ctx: Context, onFocus: ((Item) -> Unit)?, tvRows: TvRows? = null) {
+/** Como cada fileira desenha os cartões. */
+private enum class RowStyle { RESUME, NEXT_UP, POSTER, ARRIVED }
+
+private data class HomeRow(val key: String, val title: String, val items: List<Item>, val style: RowStyle)
+
+/** Monta as fileiras na ordem escolhida em Ajustes, sem as desligadas e sem as vazias. */
+private fun buildRows(data: HomeData): List<HomeRow> {
+    val s = App.session
+    val rows = mutableListOf<HomeRow>()
+    for (section in s.homeOrder) {
+        if (!s.homeShows(section)) continue
+        when (section) {
+            HomeSections.RESUME -> rows += HomeRow(section, "Continuar assistindo", data.resume, RowStyle.RESUME)
+            HomeSections.NEXT_UP -> rows += HomeRow(section, "Próximo episódio", data.nextUp, RowStyle.NEXT_UP)
+            HomeSections.BECAUSE -> data.because.forEachIndexed { i, (name, list) ->
+                rows += HomeRow("because:$i", "Para você que assistiu $name", list, RowStyle.POSTER)
+            }
+            HomeSections.ARRIVED -> rows += HomeRow(section, "Seu pedido chegou", data.arrived, RowStyle.ARRIVED)
+            HomeSections.FAVORITES -> rows += HomeRow(section, "Minha lista", data.favorites.filter { Favorites.isFavorite(it) }, RowStyle.POSTER)
+            HomeSections.LATEST -> data.latest.forEachIndexed { i, (name, list) ->
+                rows += HomeRow("latest:$i", "Adicionados em $name", list, RowStyle.POSTER)
+            }
+        }
+    }
+    return rows.filter { it.items.isNotEmpty() }
+}
+
+private fun LazyListScope.homeRows(rows: List<HomeRow>, nav: Nav, ctx: Context, onFocus: ((Item) -> Unit)?, tvRows: TvRows? = null) {
     val jf = App.session.jellyfin
     val text = tvRows == null
     val topPad = if (tvRows != null) 6.dp else 18.dp
     // capas: altura calculada pela tela na TV; no celular, larguras fixas como antes
     val posterW = tvRows?.let { it.poster * 2f / 3f }
     val wideW = tvRows?.let { it.poster * 0.82f * 16f / 9f }
-    item { RowSpec(tvRows) {
+    itemsIndexed(rows, key = { _, r -> r.key }) { i, row -> RowSpec(tvRows) {
         val tv = LocalIsTv.current
-        MediaRow("Continuar assistindo", data.resume, Modifier.rowFocus(tvRows, 0), topPad) {
-            MediaCard(
-                title = if (it.isEpisode) it.seriesName ?: it.name else it.name,
-                subtitle = if (it.isEpisode) it.episodeLabel else it.year?.toString(),
-                image = jf.landscapeImage(it), landscape = true, progress = it.progress,
-                width = wideW ?: if (tv) 260.dp else 200.dp, showText = text,
-                onFocus = focusOf(onFocus, it),
-                onClick = { ctx.play(it) },
-            )
-        }
-    } }
-    item { RowSpec(tvRows) {
-        val tv = LocalIsTv.current
-        MediaRow("Próximos episódios", data.nextUp, Modifier.rowFocus(tvRows, 1), topPad) {
-            MediaCard(
-                title = it.seriesName ?: it.name, subtitle = it.episodeLabel,
-                image = jf.landscapeImage(it), landscape = true,
-                width = wideW ?: if (tv) 260.dp else 200.dp, showText = text,
-                played = Watched.isPlayed(it),
-                onFocus = focusOf(onFocus, it),
-                onClick = { if (tv) ctx.play(it) else nav.push(Route.Details(it.id)) },
-            )
-        }
-    } }
-    item { RowSpec(tvRows) {
-        MediaRow("Minha lista", data.favorites.filter { Favorites.isFavorite(it) }, Modifier.rowFocus(tvRows, 2), topPad) {
-            MediaCard(
-                title = it.name, subtitle = it.year?.toString(), image = jf.posterImage(it), rating = it.rating,
-                showText = text, width = posterW ?: if (LocalIsTv.current) 150.dp else 112.dp,
-                badge = it.userData?.unplayed?.takeIf { n -> n > 0 && !Watched.isPlayed(it) }?.toString(),
-                played = Watched.isPlayed(it),
-                onFocus = focusOf(onFocus, it),
-                onClick = { nav.push(Route.Details(it.id)) },
-            )
-        }
-    } }
-    itemsIndexed(data.latest) { i, (name, list) -> RowSpec(tvRows) {
-        MediaRow("Adicionados em $name", list, Modifier.rowFocus(tvRows, 3 + i), topPad) {
-            MediaCard(
-                title = it.name, subtitle = it.year?.toString(), image = jf.posterImage(it), rating = it.rating,
-                showText = text, width = posterW ?: if (LocalIsTv.current) 150.dp else 112.dp,
-                badge = it.userData?.unplayed?.takeIf { n -> n > 0 && !Watched.isPlayed(it) }?.toString(),
-                played = Watched.isPlayed(it),
-                onFocus = focusOf(onFocus, it),
-                onClick = { nav.push(Route.Details(it.id)) },
-            )
+        MediaRow(row.title, row.items, Modifier.rowFocus(tvRows, i), topPad) {
+            when (row.style) {
+                RowStyle.RESUME -> MediaCard(
+                    title = if (it.isEpisode) it.seriesName ?: it.name else it.name,
+                    subtitle = if (it.isEpisode) it.episodeLabel else it.year?.toString(),
+                    image = jf.landscapeImage(it), landscape = true, progress = it.progress,
+                    width = wideW ?: if (tv) 260.dp else 200.dp, showText = text,
+                    onFocus = focusOf(onFocus, it),
+                    onClick = { ctx.play(it) },
+                )
+                RowStyle.NEXT_UP -> MediaCard(
+                    title = it.seriesName ?: it.name, subtitle = it.episodeLabel,
+                    image = jf.landscapeImage(it), landscape = true,
+                    width = wideW ?: if (tv) 260.dp else 200.dp, showText = text,
+                    played = Watched.isPlayed(it),
+                    onFocus = focusOf(onFocus, it),
+                    onClick = { if (tv) ctx.play(it) else nav.push(Route.Details(it.id)) },
+                )
+                RowStyle.POSTER, RowStyle.ARRIVED -> MediaCard(
+                    title = it.name, subtitle = it.year?.toString(), image = jf.posterImage(it), rating = it.rating,
+                    showText = text, width = posterW ?: if (tv) 150.dp else 112.dp,
+                    badge = if (row.style == RowStyle.ARRIVED) "CHEGOU"
+                    else it.userData?.unplayed?.takeIf { n -> n > 0 && !Watched.isPlayed(it) }?.toString(),
+                    played = Watched.isPlayed(it),
+                    onFocus = focusOf(onFocus, it),
+                    onClick = { nav.push(Route.Details(it.id)) },
+                )
+            }
         }
     } }
     // espaço no fim para que a última fileira também consiga subir até o topo
@@ -345,7 +383,8 @@ private fun TvHome(data: HomeData, slides: List<Item>, nav: Nav, onChanged: () -
              e as fileiras ganham o resto da tela; a fileira em foco fica inteira no topo. */
         var browsing by remember { mutableStateOf(false) }
         var curRow by remember { mutableIntStateOf(-1) }
-        val firstRow = when { data.resume.isNotEmpty() -> 0; data.nextUp.isNotEmpty() -> 1; data.favorites.isNotEmpty() -> 2; else -> 3 }
+        val rows = buildRows(data)
+        val firstRow = 0
         val fullH = (maxHeight * 0.5f).coerceIn(230.dp, 380.dp)
         val compactH = (maxHeight * 0.33f).coerceIn(170.dp, 250.dp)
         val headerH by animateDpAsState(if (browsing) compactH else fullH, tween(300), label = "header")
@@ -404,7 +443,7 @@ private fun TvHome(data: HomeData, slides: List<Item>, nav: Nav, onChanged: () -
                         },
                     state = listState,
                 ) {
-                    homeRows(data, nav, ctx, onFocus = { pending = it }, tvRows = tvRows)
+                    homeRows(rows, nav, ctx, onFocus = { pending = it }, tvRows = tvRows)
                 }
             }
         }
@@ -469,7 +508,7 @@ private fun PhoneHome(data: HomeData, slides: List<Item>, nav: Nav, onChanged: (
     val ctx = LocalContext.current
     LazyColumn(Modifier.fillMaxSize()) {
         if (slides.isNotEmpty()) item { HeroCarousel(slides, nav, onChanged) }
-        homeRows(data, nav, ctx, onFocus = null)
+        homeRows(buildRows(data), nav, ctx, onFocus = null)
     }
 }
 
