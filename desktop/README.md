@@ -29,7 +29,9 @@ Precisa de JDK 17 e, no Linux, do libmpv (`sudo apt install libmpv2`).
 ```
 
 No Windows, `gradlew.bat run` baixa sozinho a `libmpv-2.dll` (do projeto shinchiro/mpv-winbuild-cmake, ~116 MB)
-para `resources/windows/` na primeira vez. Para baixar de novo: `gradlew.bat baixarLibmpv -PforcarLibmpv`.
+para `resources/windows/` na primeira vez. Também baixa a `vulkan-1.dll` (carregador oficial do Vulkan, LunarG
+1.4.304.0, conferido por SHA-256): a libmpv depende dela e o Windows só a tem quando o driver de vídeo está instalado.
+Para baixar de novo: `gradlew.bat baixarLibmpv -PforcarLibmpv` e `gradlew.bat baixarVulkan -PforcarVulkan`.
 
 ## Instaladores
 

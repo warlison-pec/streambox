@@ -1,4 +1,6 @@
 import java.net.URI
+import java.security.MessageDigest
+import java.util.zip.ZipInputStream
 import org.jetbrains.compose.desktop.application.dsl.TargetFormat
 
 
@@ -10,6 +12,7 @@ import org.jetbrains.compose.desktop.application.dsl.TargetFormat
  *   ./gradlew run -Pedicao=comunidade -> Comunidade (qualquer Jellyfin)
  *   ./gradlew packageDeb / packageMsi -Pedicao=...   (o .msi só pode ser gerado no Windows)
  *   ./gradlew baixarLibmpv            -> baixa a libmpv-2.dll (no Windows é automático no run/package)
+ *   ./gradlew baixarVulkan            -> baixa a vulkan-1.dll (idem)
  */
 
 plugins {
@@ -19,7 +22,7 @@ plugins {
     id("org.jetbrains.compose") version "1.7.3"
 }
 
-val appVersion = "0.1.7"
+val appVersion = "0.1.8"
 val edicao = (findProperty("edicao") as String?) ?: "pecbox"
 
 data class Edicao(
@@ -207,7 +210,49 @@ val baixarLibmpv by tasks.registering {
     }
 }
 
-// No Windows, garante a DLL antes de juntar os recursos do app (run, createDistributable, packageMsi…)
+/*
+ * A libmpv-2.dll depende da vulkan-1.dll, que não vem com o Windows: quem instala é o driver de vídeo.
+ * Num Windows recém-instalado (driver genérico da Microsoft) ela não existe e a libmpv nem carrega.
+ * Vai junto o carregador oficial do Vulkan (Khronos/LunarG, MIT/Apache 2.0, assinado); sem driver com
+ * Vulkan, o mpv usa o Direct3D 11. Versão fixa, conferida pelo SHA-256.
+ */
+val vulkanVersao = "1.4.304.0"
+val vulkanSha256 = "671f956c12ec0042d82c934ed47d146812b181459389f63666a95b702195437c"
+val vulkanDll = layout.projectDirectory.file("resources/windows/vulkan-1.dll")
+
+val baixarVulkan by tasks.registering {
+    description = "Baixa a vulkan-1.dll (carregador do Vulkan, exigido pela libmpv) para resources/windows/"
+    group = "streambox"
+    val destino = vulkanDll.asFile
+    onlyIf { !destino.exists() || project.hasProperty("forcarVulkan") }
+    doLast {
+        val url = "https://sdk.lunarg.com/sdk/download/$vulkanVersao/windows/VulkanRT-$vulkanVersao-Components.zip?u="
+        logger.lifecycle("Baixando $url")
+        val zip = File(temporaryDir, "VulkanRT-$vulkanVersao-Components.zip")
+        URI(url).toURL().openConnection().apply { setRequestProperty("User-Agent", "streambox-build") }
+            .getInputStream().use { input -> zip.outputStream().use { input.copyTo(it) } }
+        val hash = MessageDigest.getInstance("SHA-256").digest(zip.readBytes()).joinToString("") { "%02x".format(it) }
+        check(hash == vulkanSha256) { "SHA-256 inesperado no pacote do Vulkan ($hash)" }
+        destino.parentFile.mkdirs()
+        var achou = false
+        ZipInputStream(zip.inputStream()).use { z ->
+            while (true) {
+                val e = z.nextEntry ?: break
+                val alvo = when {
+                    e.name.endsWith("/x64/vulkan-1.dll") -> destino.also { achou = true }
+                    e.name.endsWith("/VulkanRT-License.txt") -> File(destino.parentFile, "vulkan-1.LICENSE.txt")
+                    else -> null
+                } ?: continue
+                alvo.outputStream().use { z.copyTo(it) }
+            }
+        }
+        zip.delete()
+        check(achou) { "vulkan-1.dll (x64) não estava no pacote $url" }
+        logger.lifecycle("vulkan-1.dll pronta em $destino")
+    }
+}
+
+// No Windows, garante as DLLs antes de juntar os recursos do app (run, createDistributable, packageMsi…)
 if (System.getProperty("os.name").startsWith("Windows")) {
-    tasks.matching { it.name == "prepareAppResources" }.configureEach { dependsOn(baixarLibmpv) }
+    tasks.matching { it.name == "prepareAppResources" }.configureEach { dependsOn(baixarLibmpv, baixarVulkan) }
 }

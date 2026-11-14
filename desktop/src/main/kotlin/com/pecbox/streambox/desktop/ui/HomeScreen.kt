@@ -41,10 +41,12 @@ import coil3.compose.AsyncImage
 import com.pecbox.streambox.data.Item
 import com.pecbox.streambox.data.friendly
 import com.pecbox.streambox.data.libraryItemTypes
+import com.pecbox.streambox.desktop.data.HomeExtras
 import com.pecbox.streambox.desktop.data.Session
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeoutOrNull
 
 private class HomeData(
     val featured: List<Item>,
@@ -53,12 +55,19 @@ private class HomeData(
     val latest: List<Pair<Item, List<Item>>>,
 )
 
+/** Fileiras que dependem de mais consultas: chegam depois, sem atrasar o resto do Início. */
+private class HomeExtrasData(
+    val because: List<Pair<String, List<Item>>>,   // "Para você que assistiu X"
+    val arrived: List<Item>,                       // "Seu pedido chegou"
+)
+
 @Composable
 fun HomeScreen(s: Session, refreshKey: Int, open: (Item) -> Unit, play: (Item, Boolean) -> Unit) {
     val jf = s.jellyfin
     var data by remember { mutableStateOf<HomeData?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     var retry by remember { mutableIntStateOf(0) }
+    var extras by remember { mutableStateOf<HomeExtrasData?>(null) }
 
     LaunchedEffect(refreshKey, retry) {
         error = null
@@ -73,6 +82,13 @@ fun HomeScreen(s: Session, refreshKey: Int, open: (Item) -> Unit, play: (Item, B
             }
         } catch (e: Exception) {
             if (data == null) error = e.friendly()
+        }
+        // Sugestões pelo histórico e pedidos que chegaram (sem histórico/pedidos, as fileiras não aparecem)
+        val resume = data?.resume ?: return@LaunchedEffect
+        extras = coroutineScope {
+            val because = async { withTimeoutOrNull(15_000) { runCatching { HomeExtras.forYou(jf, resume) }.getOrNull() }.orEmpty() }
+            val arrived = async { withTimeoutOrNull(15_000) { runCatching { HomeExtras.arrived(s) }.getOrNull() }.orEmpty() }
+            HomeExtrasData(because.await(), arrived.await())
         }
     }
 
@@ -97,6 +113,26 @@ fun HomeScreen(s: Session, refreshKey: Int, open: (Item) -> Unit, play: (Item, B
                         image = jf.landscapeImage(item), landscape = true, width = 300.dp,
                         onClick = { play(item, false) },
                     )
+                }
+            }
+            extras?.let { x ->
+                for ((name, list) in x.because) {
+                    item {
+                        MediaRow("Para você que assistiu $name", list) { item ->
+                            MediaCard(
+                                title = item.name, subtitle = item.year?.toString(), image = jf.posterImage(item),
+                                rating = item.rating, onClick = { open(item) },
+                            )
+                        }
+                    }
+                }
+                if (x.arrived.isNotEmpty()) item {
+                    MediaRow("Seu pedido chegou", x.arrived) { item ->
+                        MediaCard(
+                            title = item.name, subtitle = item.year?.toString(), image = jf.posterImage(item),
+                            badge = "CHEGOU", rating = item.rating, onClick = { open(item) },
+                        )
+                    }
                 }
             }
             for ((view, list) in d.latest) {

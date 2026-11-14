@@ -291,6 +291,8 @@ class PlayerController(private val s: Session, private val scope: CoroutineScope
         m.option("osd-color", "#FFFF7A00")
         m.option("sub-bold", "yes")
         m.option("screenshot-directory", System.getProperty("user.home"))
+        m.option("volume", s.volume.toString())
+        m.option("volume-max", "130")
         // Opções extras para testes: STREAMBOX_MPV_OPTS="vo=null,ao=null"
         System.getenv("STREAMBOX_MPV_OPTS")?.split(',')?.forEach { kv ->
             val (k, v) = kv.split('=', limit = 2).let { it[0] to it.getOrElse(1) { "yes" } }
@@ -550,6 +552,7 @@ class PlayerController(private val s: Session, private val scope: CoroutineScope
             }
         }
 
+        m.double("volume")?.let { s.volume = Math.round(it).toInt() }   // o próximo vídeo abre no mesmo volume
         mpv = null
         pending = null
         playing = null
@@ -1033,6 +1036,10 @@ class PlayerController(private val s: Session, private val scope: CoroutineScope
         val installed = System.getProperty("jpackage.app-path") != null
         return when {
             !windows -> "O componente de vídeo (libmpv) não está instalado. No terminal: sudo apt install libmpv2"
+            // O arquivo está lá, mas o Windows recusou carregar: quase sempre falta o driver de vídeo
+            LibMpv.dllPresent -> "O componente de vídeo não conseguiu iniciar neste computador. Instale ou atualize o driver " +
+                "de vídeo (Windows Update > Atualizações opcionais, ou o site do fabricante) e reinicie. " +
+                "Detalhe: ${LibMpv.loadError?.lineSequence()?.firstOrNull { "libmpv-2" in it } ?: LibMpv.loadError?.lineSequence()?.firstOrNull().orEmpty()}"
             installed -> "O componente de vídeo (libmpv-2.dll) não foi encontrado na pasta do programa. Reinstale o StreamBox."
             else -> "libmpv-2.dll não encontrada (procurada em: ${LibMpv.searched.ifEmpty { listOf("nenhuma pasta de recursos") }.joinToString()}). " +
                 "Rodando pelo código-fonte: feche o app e rode gradlew.bat baixarLibmpv (o run também baixa sozinho)."

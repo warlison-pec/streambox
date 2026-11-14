@@ -198,6 +198,19 @@ local function icon_button(out, cx, cy, r, icon, action, primary)
         out[#out + 1] = poly({ cx + a, cy + a, cx + a - 2*b, cy + a, cx + a - 2*b, cy + a - b, cx + a - b, cy + a - b, cx + a - b, cy + a - 2*b, cx + a, cy + a - 2*b }, fg)
         out[#out + 1] = poly({ cx + a, cy - a, cx + a, cy - a + 2*b, cx + a - b, cy - a + 2*b, cx + a - b, cy - a + b, cx + a - 2*b, cy - a + b, cx + a - 2*b, cy - a }, fg)
         out[#out + 1] = poly({ cx - a, cy + a, cx - a, cy + a - 2*b, cx - a + b, cy + a - 2*b, cx - a + b, cy + a - b, cx - a + 2*b, cy + a - b, cx - a + 2*b, cy + a }, fg)
+    elseif icon == "vol" or icon == "mute" then
+        -- alto-falante
+        out[#out + 1] = rect(cx - 11*u, cy - 4*u, cx - 5*u, cy + 4*u, fg)
+        out[#out + 1] = poly({ cx - 6*u, cy - 4*u, cx + 2*u, cy - 11*u, cx + 2*u, cy + 11*u, cx - 6*u, cy + 4*u }, fg)
+        if icon == "mute" then
+            -- X ao lado
+            out[#out + 1] = poly({ cx + 5*u, cy - 6*u, cx + 7*u, cy - 6*u, cx + 13*u, cy + 4*u, cx + 11*u, cy + 6*u }, fg)
+            out[#out + 1] = poly({ cx + 11*u, cy - 6*u, cx + 13*u, cy - 4*u, cx + 7*u, cy + 6*u, cx + 5*u, cy + 4*u }, fg)
+        else
+            -- ondas do som
+            out[#out + 1] = rect(cx + 5*u, cy - 4*u, cx + 7*u, cy + 4*u, fg)
+            out[#out + 1] = rect(cx + 9*u, cy - 8*u, cx + 11*u, cy + 8*u, fg)
+        end
     end
     add_box(cx - r, cy - r, cx + r, cy + r, action)
 end
@@ -220,6 +233,30 @@ local function text_button(out, x, cy, h, label, action, size, primary)
     out[#out + 1] = text(x + w / 2, cy, 5, size, primary and BLACK or WHITE, label, true)
     add_box(x, cy - h / 2, x + w, cy + h / 2, action)
     return w
+end
+
+-- Volume: botão de mudo + barra (clique escolhe o nível; a roda do mouse e as teclas + / - também ajustam)
+local function volume_control(out, x, cy, r, s)
+    local muted = mp.get_property_bool("mute")
+    local vol = mp.get_property_number("volume", 100)
+    icon_button(out, x + r, cy, r, muted and "mute" or "vol", "mute")
+    local x1 = x + 2 * r + math.floor(12 * s)
+    local x2 = x1 + math.floor(130 * s)
+    local hot = hovered(x1 - 6 * s, cy - 18 * s, x2 + 6 * s, cy + 18 * s)
+    local bh = math.floor((hot and 8 or 6) * s)
+    local px = x1 + (x2 - x1) * math.max(0, math.min(1, vol / 100))
+    local color = muted and MUTED or ORANGE
+    out[#out + 1] = rrect(x1, cy - bh / 2, x2, cy + bh / 2, bh / 2, WHITE, "B0")
+    if px > x1 then out[#out + 1] = rrect(x1, cy - bh / 2, px, cy + bh / 2, bh / 2, color) end
+    out[#out + 1] = circle(px, cy, math.floor((hot and 9 or 7) * s), color)
+    local label = muted and "Mudo" or (math.floor(vol + 0.5) .. "%")
+    out[#out + 1] = text(x2 + math.floor(14 * s), cy, 4, math.floor(20 * s), hot and ORANGE or MUTED, label, hot)
+    add_box(x1 - 6 * s, cy - 18 * s, x2 + 6 * s, cy + 18 * s, "volbar", { x1 = x1, x2 = x2 })
+end
+
+local function show_volume()
+    if mp.get_property_bool("mute") then mp.osd_message("Sem som", 1); return end
+    mp.osd_message("Volume: " .. math.floor(mp.get_property_number("volume", 100) + 0.5) .. "%", 1)
 end
 
 local function visible()
@@ -480,6 +517,7 @@ local function render()
             icon_button(out, x, row_y, math.floor(r * 1.2), paused and "play" or "pause", "pause", true); x = x + math.floor(2.2 * r) + math.floor(14 * s)
             icon_button(out, x, row_y, r, "fwd", "fwd")
         end
+        volume_control(out, x + r + math.floor(24 * s), row_y, r, s)
 
         -- Botões da direita: tela cheia, legendas, áudio, episódios/canais
         local fx = w - pad - r
@@ -564,6 +602,14 @@ local function act(action, arg)
     elseif action == "menu-audio" then mp.commandv("script-message", "sb-abrir", "audio")
     elseif action == "menu-episodios" then mp.commandv("script-message", "sb-abrir", "episodios")
     elseif action == "menu-canais" then mp.commandv("script-message", "sb-abrir", "canais")
+    elseif action == "mute" then
+        mp.commandv("cycle", "mute"); show_volume()
+    elseif action == "volbar" and arg then
+        -- além de 100% só pela roda do mouse ou pelo teclado (até 130%)
+        local v = math.floor(math.max(0, math.min(1, (mouse.x - arg.x1) / (arg.x2 - arg.x1))) * 100 + 0.5)
+        mp.set_property_number("volume", v)
+        mp.set_property_bool("mute", false)
+        show_volume()
     elseif action == "skip" then mp.commandv("seek", tostring(arg), "absolute")
     elseif action == "next-now" then
         next_dismissed = true; next_deadline = nil
@@ -675,7 +721,8 @@ mp.register_script_message("sb-wheel", function(d)
         poke()
     else
         mp.commandv("add", "volume", tostring(-d * 5))
-        mp.osd_message("Volume: " .. math.floor(mp.get_property_number("volume", 100) + 0.5) .. "%", 1)
+        if d < 0 then mp.set_property_bool("mute", false) end
+        show_volume()
         poke()
     end
 end)
@@ -770,10 +817,17 @@ for d = 0, 9 do
         if info.kind == "live" then mp.commandv("script-message", "sb-digito", tostring(d)) end
     end)
 end
-key("m", function()
-    mp.commandv("cycle", "mute")
-    mp.osd_message(mp.get_property_bool("mute") and "Sem som" or "Som ligado", 1)
-end)
+key("m", function() act("mute"); poke() end)
+-- Volume pelo teclado: + / = aumenta, - diminui (5 em 5)
+local function vol_key(d)
+    return function()
+        mp.commandv("add", "volume", tostring(d))
+        if d > 0 then mp.set_property_bool("mute", false) end
+        show_volume(); poke()
+    end
+end
+key("+", vol_key(5)); key("=", vol_key(5)); key("KP_ADD", vol_key(5))
+key("-", vol_key(-5)); key("KP_SUBTRACT", vol_key(-5))
 
 -- ---------- informações vindas do app ----------
 
@@ -807,4 +861,6 @@ end)
 
 mp.add_periodic_timer(0.1, render)
 mp.observe_property("pause", "bool", function() poke() end)
+mp.observe_property("volume", "number", function() render() end)
+mp.observe_property("mute", "bool", function() render() end)
 mp.register_event("file-loaded", poke)

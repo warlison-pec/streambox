@@ -163,6 +163,50 @@ class JellyfinApi(private val s: Session) {
         )
     )
 
+    /* ---------------- recomendações e pedidos (Início) ---------------- */
+
+    /** Filmes e episódios já assistidos, do mais recente para o mais antigo. */
+    suspend fun recentlyPlayed(limit: Int = 40): List<Item> = items(
+        "/Items",
+        mapOf(
+            "userId" to s.userId, "recursive" to true, "includeItemTypes" to "Movie,Episode",
+            "filters" to "IsPlayed", "sortBy" to "DatePlayed", "sortOrder" to "Descending",
+            "limit" to limit, "fields" to "Genres", "enableTotalRecordCount" to false, "enableImages" to false,
+        )
+    ).items
+
+    /** Títulos parecidos segundo o próprio Jellyfin (gêneros, tags, estúdios e elenco em comum). */
+    suspend fun similar(itemId: String, limit: Int = 24): List<Item> = items(
+        "/Items/$itemId/Similar",
+        mapOf("userId" to s.userId, "limit" to limit, "fields" to FIELDS)
+    ).items
+
+    /** Títulos ainda não vistos que têm algum destes gêneros. */
+    suspend fun byGenres(genres: List<String>, types: String, limit: Int = 24): List<Item> = items(
+        "/Items",
+        mapOf(
+            "userId" to s.userId, "recursive" to true, "includeItemTypes" to types,
+            "genres" to genres.joinToString("|"), "isPlayed" to false, "sortBy" to "Random",
+            "limit" to limit, "fields" to FIELDS, "enableTotalRecordCount" to false,
+        )
+    ).items
+
+    /** Procura um filme ou série da biblioteca pelo nome (para saber se um pedido já chegou). */
+    suspend fun findTitle(title: String, kind: String, year: Int?): Item? {
+        val wanted = normalizeTitle(title)
+        val type = if (kind == "series") "Series" else "Movie"
+        return items(
+            "/Items",
+            mapOf(
+                "userId" to s.userId, "searchTerm" to title, "recursive" to true,
+                "includeItemTypes" to type, "limit" to 20, "fields" to FIELDS,
+            )
+        ).items
+            .filter { normalizeTitle(it.name) == wanted }
+            .minByOrNull { if (year == null || it.year == null) 1 else kotlin.math.abs(it.year - year) * 2 }
+            ?.takeIf { year == null || it.year == null || kotlin.math.abs(it.year - year) <= 1 }
+    }
+
     suspend fun item(id: String): Item =
         AppJson.decodeFromString(Item.serializer(), getText("/Items/$id", mapOf("userId" to s.userId)))
 

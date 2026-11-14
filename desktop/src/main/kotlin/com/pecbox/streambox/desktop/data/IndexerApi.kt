@@ -2,6 +2,8 @@ package com.pecbox.streambox.desktop.data
 
 import com.pecbox.streambox.data.AppJson
 import com.pecbox.streambox.data.IndexerItem
+import com.pecbox.streambox.data.IndexerMine
+import com.pecbox.streambox.data.IndexerRequest
 import com.pecbox.streambox.data.IndexerSearch
 import com.pecbox.streambox.data.JSON_TYPE
 import com.pecbox.streambox.data.RequestCreated
@@ -42,6 +44,12 @@ class IndexerApi(private val s: Session) {
         }.toString()
         val text = s.http.fetch(request("/request").post(body.toRequestBody(JSON_TYPE)).build())
         return AppJson.decodeFromString(RequestCreated.serializer(), text)
+    }
+
+    /** Pedidos deste usuário do Jellyfin (de qualquer aparelho), mais recentes primeiro. */
+    suspend fun mine(): List<IndexerRequest> {
+        val text = s.http.fetch(request("/mine").build())
+        return AppJson.decodeFromString(IndexerMine.serializer(), text).items
     }
 
     suspend fun status(id: String): RequestStatus {

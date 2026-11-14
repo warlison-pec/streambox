@@ -102,6 +102,11 @@ class Session {
         get() = prefs.getBoolean("fullscreen", true)
         set(v) { prefs.putBoolean("fullscreen", v); runCatching { prefs.flush() } }
 
+    /** Volume do player (0–130, como no mpv), lembrado entre um vídeo e outro. */
+    var volume: Int
+        get() = prefs.getInt("volume", 100).coerceIn(0, 130)
+        set(v) { prefs.putInt("volume", v.coerceIn(0, 130)); runCatching { prefs.flush() } }
+
     /** Aparência da legenda (índices de SubtitleStyle, iguais aos do app Android). */
     var subSize: Int
         get() = prefs.getInt("sub_size", 1)

@@ -3,6 +3,8 @@ package com.pecbox.streambox.desktop.data
 import com.pecbox.streambox.data.ApiException
 import com.pecbox.streambox.data.AppJson
 import com.pecbox.streambox.data.JSON_TYPE
+import com.pecbox.streambox.data.SeerrRequestFull
+import com.pecbox.streambox.data.SeerrRequestsFull
 import com.pecbox.streambox.data.SeerrResult
 import com.pecbox.streambox.data.SeerrSearch
 import com.pecbox.streambox.data.SeerrTv
@@ -58,6 +60,28 @@ class SeerrApi(private val s: Session) {
     suspend fun me(): String {
         val text = s.http.fetch(request("/auth/me").build())
         return AppJson.decodeFromString(SeerrUser.serializer(), text).label.also { s.seerrUser = it }
+    }
+
+    /**
+     * Só dá para saber quem pediu quando o login é com a conta do Jellyfin: com a chave de API
+     * todo pedido sai como administrador, então não há pedidos "da pessoa" para mostrar.
+     */
+    val identifiesUser: Boolean get() = enabled && s.seerrApiKey.isBlank() && s.seerrCookie.isNotBlank()
+
+    /** Pedidos deste usuário no Seerr, com o status de cada um (mais recentes primeiro). */
+    suspend fun myRequests(take: Int = 100): List<SeerrRequestFull> {
+        if (!identifiesUser) return emptyList()
+        val me = AppJson.decodeFromString(SeerrUser.serializer(), s.http.fetch(request("/auth/me").build()))
+        val text = s.http.fetch(request("/request?take=$take&sort=added&requestedBy=${me.id}").build())
+        // Administrador recebe os pedidos de todos: fica só com os que esta pessoa fez
+        return AppJson.decodeFromString(SeerrRequestsFull.serializer(), text).results.filter { it.requestedBy?.id == me.id }
+    }
+
+    /** Nome, ano e capa de um filme ("movie") ou série ("tv") pelo código TMDB. */
+    suspend fun details(mediaType: String, tmdbId: Int): SeerrResult {
+        val path = if (mediaType == "tv") "/tv/$tmdbId" else "/movie/$tmdbId"
+        val text = s.http.fetch(request("$path?language=pt-BR").build())
+        return AppJson.decodeFromString(SeerrResult.serializer(), text)
     }
 
     fun logout() {

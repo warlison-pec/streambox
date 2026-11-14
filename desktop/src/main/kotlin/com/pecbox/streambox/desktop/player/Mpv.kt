@@ -2,6 +2,7 @@ package com.pecbox.streambox.desktop.player
 
 import com.sun.jna.Library
 import com.sun.jna.Native
+import com.sun.jna.NativeLibrary
 import com.sun.jna.Pointer
 import java.io.File
 import java.util.concurrent.locks.ReentrantReadWriteLock
@@ -41,6 +42,10 @@ interface LibMpv : Library {
         var searched: List<String> = emptyList()
             private set
 
+        /** Windows: a libmpv-2.dll está na pasta, mas o Windows não conseguiu carregá-la (falta dependência). */
+        var dllPresent: Boolean = false
+            private set
+
         private fun load(): LibMpv? {
             System.setProperty("jna.encoding", "UTF-8")
             // Pasta de recursos do instalador (onde fica a libmpv-2.dll no Windows)
@@ -52,6 +57,14 @@ interface LibMpv : Library {
                 val old = System.getProperty("jna.library.path")
                 System.setProperty("jna.library.path", (dirs + listOfNotNull(old)).joinToString(File.pathSeparator))
             }
+            val windows = System.getProperty("os.name").orEmpty().startsWith("Windows")
+            if (windows) {
+                // A libmpv depende da vulkan-1.dll, que só existe se o driver de vídeo estiver instalado.
+                // Carrega antes a que vai junto do app: o Windows reaproveita a já carregada.
+                dirs.map { File(it, "vulkan-1.dll") }.firstOrNull { it.isFile }?.let { vk ->
+                    runCatching { NativeLibrary.getInstance(vk.absolutePath) }
+                }
+            }
             val names = listOf("mpv", "libmpv.so.2", "mpv-2", "libmpv-2", "libmpv.so.1", "mpv-1")
             val errors = mutableListOf<String>()
             for (name in names) {
@@ -62,6 +75,7 @@ interface LibMpv : Library {
                 }
             }
             searched = dirs
+            dllPresent = windows && dirs.any { File(it, "libmpv-2.dll").isFile }
             loadError = errors.joinToString("\n")
             return null
         }
