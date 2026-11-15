@@ -32,6 +32,8 @@ data class RequestView(
 object MyRequests {
     private const val MAX_LOCAL = 100
     private const val MAX_AGE_MS = 2 * 60_000L
+    private const val MAX_DISMISSED = 300
+    private const val SEERR_TAKE = 100
     private val serializer = ListSerializer(MyRequest.serializer())
     private val lock = Mutex()
     private val s get() = App.session
@@ -77,13 +79,32 @@ object MyRequests {
         fresh ?: load().also { cache = it; cacheTime = System.currentTimeMillis(); cacheUser = s.userId }
     }
 
+    /** Tira da lista os pedidos que já chegaram (eles continuam no catálogo, só somem daqui). */
+    suspend fun clearArrived() = lock.withLock {
+        val gone = cache.orEmpty().filter { it.item != null }.map { it.request.key }.toSet()
+        if (gone.isEmpty()) return@withLock
+        s.dismissedRequests = (s.dismissedRequests + gone).toList().takeLast(MAX_DISMISSED).toSet()
+        forget(gone)
+        cache = cache?.filterNot { it.request.key in gone }
+    }
+
+    /** Apaga pedidos guardados neste aparelho. */
+    private fun forget(keys: Set<String>) {
+        if (keys.isEmpty() || local.none { it.key in keys }) return
+        local.removeAll { it.key in keys }
+        s.myRequestsJson = AppJson.encodeToString(serializer, local.toList())
+    }
+
     private suspend fun load(): List<RequestView> = coroutineScope {
         val merged = LinkedHashMap<String, Triple<MyRequest, SeerrRequestFull?, IndexerRequest?>>()
         local.toList().forEach { merged[it.key] = Triple(it, null, null) }
 
-        // Os dois servidores devolvem só os pedidos desta pessoa (de qualquer aparelho)
-        val strmJob = async { if (s.indexer.enabled) runCatching { s.indexer.mine() }.getOrNull() else emptyList() }
-        val seerrJob = async { if (s.seerr.identifiesUser) runCatching { s.seerr.myRequests() }.getOrNull() else emptyList() }
+        // Os dois servidores devolvem só os pedidos desta pessoa (de qualquer aparelho).
+        // null = não respondeu (ou não está configurado): aí nada é apagado por engano.
+        val askStrm = s.indexer.enabled
+        val askSeerr = s.seerr.identifiesUser
+        val strmJob = async { if (askStrm) runCatching { s.indexer.mine() }.getOrNull() else null }
+        val seerrJob = async { if (askSeerr) runCatching { s.seerr.myRequests(SEERR_TAKE) }.getOrNull() else null }
         val strm = strmJob.await()
         val seerr = seerrJob.await()
 
@@ -107,20 +128,54 @@ object MyRequests {
             }
         }.awaitAll().filterNotNull().forEach { (k, v) -> merged[k] = v }
 
+        // Pedido excluído no servidor: o servidor respondeu e não o conhece mais
+        val strmIds = strm?.map { it.id }?.toSet()
+        val seerrComplete = seerr != null && seerr.size < SEERR_TAKE
+        val removed = merged.values.filter { (req, se, ix) ->
+            se == null && ix == null && when (req.source) {
+                "strm" -> strmIds != null && req.remoteId != null && req.remoteId !in strmIds
+                "seerr" -> seerrComplete
+                else -> false
+            }
+        }.map { it.first.key }.toSet()
+        removed.forEach { merged.remove(it) }
+
         // Só conta o que os servidores responderam; se um falhou, mantém a contagem anterior
-        if (strm != null && seerr != null) {
-            remoteCount = strm.size + seerr.size
+        if ((strm != null || !askStrm) && (seerr != null || !askSeerr)) {
+            remoteCount = strm.orEmpty().size + seerr.orEmpty().size
             s.remoteRequestCount = remoteCount
         }
 
-        merged.values.map { (req, se, ix) -> async { resolve(req, se, ix) } }.awaitAll()
-            .sortedByDescending { it.request.time }
+        val dismissed = s.dismissedRequests
+        val views = merged.values.filter { it.first.key !in dismissed }
+            .map { (req, se, ix) -> async { resolve(req, se, ix) } }.awaitAll()
+
+        // Recusado ou que falhou também sai da lista e do aparelho
+        val failed = views.filter { it.state == RequestState.FAILED }.map { it.request.key }.toSet()
+        forget(removed + failed)
+
+        // Guarda qual item do Jellyfin é cada pedido: se o nome mudar depois, continua achando
+        val found = views.mapNotNull { v -> v.item?.let { v.request.key to it.id } }.toMap()
+        if (local.any { r -> found[r.key]?.let { it != r.itemId } == true }) {
+            val updated = local.map { r -> found[r.key]?.let { r.copy(itemId = it) } ?: r }
+            local.clear(); local.addAll(updated)
+            s.myRequestsJson = AppJson.encodeToString(serializer, updated)
+        }
+
+        views.filter { it.state != RequestState.FAILED }.sortedByDescending { it.request.time }
+    }
+
+    /** Acha o item no catálogo: pelo id já conhecido, pelo que o Seerr informa, pelo TMDB e, por último, pelo nome. */
+    private suspend fun findItem(req: MyRequest, seerr: SeerrRequestFull?): Item? {
+        val jf = s.jellyfin
+        req.itemId?.let { id -> runCatching { jf.item(id) }.getOrNull()?.let { return it } }
+        seerr?.media?.jellyfinMediaId?.let { id -> runCatching { jf.item(id) }.getOrNull()?.let { return it } }
+        (req.tmdbId ?: seerr?.media?.tmdbId)?.let { tmdb -> runCatching { jf.findByTmdb(tmdb, req.kind) }.getOrNull()?.let { return it } }
+        return runCatching { jf.findTitle(req.title, req.kind, req.year) }.getOrNull()
     }
 
     private suspend fun resolve(req: MyRequest, seerr: SeerrRequestFull?, strm: IndexerRequest?): RequestView {
-        val jf = s.jellyfin
-        val item = seerr?.media?.jellyfinMediaId?.let { id -> runCatching { jf.item(id) }.getOrNull() }
-            ?: runCatching { jf.findTitle(req.title, req.kind, req.year) }.getOrNull()
+        val item = findItem(req, seerr)
         if (item != null) {
             val partial = seerr?.media?.status == 4
             return RequestView(req, if (partial) RequestState.PARTIAL else RequestState.ARRIVED, if (partial) "Chegou em parte" else "Disponível", item)

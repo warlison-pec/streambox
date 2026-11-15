@@ -146,6 +146,11 @@ class Session(context: Context) {
         get() = prefs.getString("my_requests_$userId", "") ?: ""
         set(v) = prefs.edit().putString("my_requests_$userId", v).apply()
 
+    /** Pedidos que a pessoa tirou da lista (botão Limpar), por usuário. */
+    var dismissedRequests: Set<String>
+        get() = prefs.getStringSet("dismissed_requests_$userId", emptySet()).orEmpty()
+        set(v) = prefs.edit().putStringSet("dismissed_requests_$userId", v).apply()
+
     /** Quantos pedidos o Seerr tinha na última consulta (para mostrar a aba Pedidos logo ao abrir). */
     var remoteRequestCount: Int
         get() = prefs.getInt("remote_requests2_$userId", 0)

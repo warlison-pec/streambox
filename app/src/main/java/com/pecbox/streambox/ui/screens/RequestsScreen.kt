@@ -21,6 +21,7 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ClearAll
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.outlined.Inbox
 import androidx.compose.material3.Icon
@@ -29,6 +30,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -39,6 +41,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.pecbox.streambox.App
+import kotlinx.coroutines.launch
 import com.pecbox.streambox.data.MyRequests
 import com.pecbox.streambox.data.RequestState
 import com.pecbox.streambox.data.RequestView
@@ -68,13 +71,14 @@ private fun RequestState.color() = when (this) {
     RequestState.FAILED -> Danger
 }
 
-/** Aba "Pedidos": tudo o que a pessoa pediu e em que pé está cada pedido. */
+/** Aba "Pedidos": o que já chegou (dá para limpar) e, à parte, o que ainda está a caminho. */
 @Composable
 fun RequestsScreen(nav: Nav) {
     val tv = LocalIsTv.current
     var nonce by rememberSaveable { mutableStateOf(0) }
     val loader = rememberLoader("requests") { MyRequests.views(force = nonce > 0) }
-    var filter by rememberSaveable { mutableStateOf(0) }   // 0 todos · 1 chegaram · 2 aguardando
+    var filter by rememberSaveable { mutableStateOf(1) }   // 1 chegaram · 2 a caminho
+    val scope = rememberCoroutineScope()
     val side = if (tv) 40.dp else 16.dp
 
     val all = loader.data
@@ -84,7 +88,7 @@ fun RequestsScreen(nav: Nav) {
         else -> {
             val arrived = all.filter { it.item != null }
             val waiting = all.filter { it.item == null }
-            val shown = when (filter) { 1 -> arrived; 2 -> waiting; else -> all }
+            val shown = if (filter == 2) waiting else arrived
             LazyVerticalGrid(
                 columns = GridCells.Adaptive(if (tv) 380.dp else 320.dp),
                 modifier = Modifier.fillMaxSize(),
@@ -98,23 +102,26 @@ fun RequestsScreen(nav: Nav) {
                             Column(Modifier.weight(1f)) {
                                 Text("Meus pedidos", style = MaterialTheme.typography.headlineMedium)
                                 Text(
-                                    "${all.size} no total · ${arrived.size} já chegaram",
+                                    "${arrived.size} chegaram · ${waiting.size} a caminho",
                                     color = TextMuted, style = MaterialTheme.typography.bodyMedium,
                                 )
                             }
+                            if (filter == 1 && arrived.isNotEmpty()) SbButton(
+                                "Limpar", primary = false, icon = Icons.Filled.ClearAll, enabled = !loader.loading,
+                                onClick = { scope.launch { MyRequests.clearArrived(); loader.reload() } },
+                            )
                             SbButton(
                                 if (loader.loading) "Atualizando…" else "Atualizar", primary = false, icon = Icons.Filled.Refresh,
                                 enabled = !loader.loading, onClick = { nonce++; loader.reload() },
                             )
                         }
                         if (all.isNotEmpty()) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Chip("Todos · ${all.size}", selected = filter == 0, onClick = { filter = 0 })
                             Chip("Chegaram · ${arrived.size}", selected = filter == 1, onClick = { filter = 1 })
-                            Chip("Aguardando · ${waiting.size}", selected = filter == 2, onClick = { filter = 2 })
+                            Chip("A caminho · ${waiting.size}", selected = filter == 2, onClick = { filter = 2 })
                         }
                     }
                 }
-                if (shown.isEmpty()) item(span = { GridItemSpan(maxLineSpan) }) { EmptyRequests(all.isEmpty()) }
+                if (shown.isEmpty()) item(span = { GridItemSpan(maxLineSpan) }) { EmptyRequests(all.isEmpty(), filter == 1) }
                 items(shown, key = { it.request.key }) { r ->
                     RequestCard(r, onOpen = { r.item?.let { nav.push(Route.Details(it.id)) } })
                 }
@@ -164,7 +171,7 @@ private fun RequestCard(r: RequestView, onOpen: () -> Unit) {
 }
 
 @Composable
-private fun EmptyRequests(none: Boolean) {
+private fun EmptyRequests(none: Boolean, arrivedTab: Boolean) {
     Column(
         Modifier.fillMaxWidth().padding(vertical = 48.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -175,7 +182,11 @@ private fun EmptyRequests(none: Boolean) {
         }
         Text(if (none) "Nenhum pedido ainda" else "Nada aqui", style = MaterialTheme.typography.titleLarge)
         Text(
-            if (none) "Busque um título que não está no catálogo e toque em Solicitar." else "Nenhum pedido neste filtro.",
+            when {
+                none -> "Busque um título que não está no catálogo e toque em Solicitar."
+                arrivedTab -> "Quando um pedido chegar ao catálogo, ele aparece aqui."
+                else -> "Nenhum pedido a caminho."
+            },
             color = TextMuted,
         )
     }

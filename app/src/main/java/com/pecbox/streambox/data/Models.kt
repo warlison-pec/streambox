@@ -330,6 +330,7 @@ data class MyRequest(
     val time: Long = 0,
     val remoteId: String? = null,       // id do pedido no STRM Indexer
     val tmdbId: Int? = null,
+    val itemId: String? = null,         // item do Jellyfin já encontrado (vale mesmo se o nome mudar depois)
 )
 
 @Serializable
