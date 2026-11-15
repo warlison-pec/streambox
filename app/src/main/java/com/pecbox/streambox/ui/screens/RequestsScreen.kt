@@ -48,7 +48,6 @@ import com.pecbox.streambox.data.RequestView
 import com.pecbox.streambox.ui.Nav
 import com.pecbox.streambox.ui.Route
 import com.pecbox.streambox.ui.components.Artwork
-import com.pecbox.streambox.ui.components.Chip
 import com.pecbox.streambox.ui.components.ErrorBox
 import com.pecbox.streambox.ui.components.Loading
 import com.pecbox.streambox.ui.components.SbButton
@@ -71,13 +70,12 @@ private fun RequestState.color() = when (this) {
     RequestState.FAILED -> Danger
 }
 
-/** Aba "Pedidos": o que já chegou (dá para limpar) e, à parte, o que ainda está a caminho. */
+/** Aba "Pedidos": só os pedidos atendidos que estão no catálogo agora (dá para limpar). */
 @Composable
 fun RequestsScreen(nav: Nav) {
     val tv = LocalIsTv.current
     var nonce by rememberSaveable { mutableStateOf(0) }
     val loader = rememberLoader("requests") { MyRequests.views(force = nonce > 0) }
-    var filter by rememberSaveable { mutableStateOf(1) }   // 1 chegaram · 2 a caminho
     val scope = rememberCoroutineScope()
     val side = if (tv) 40.dp else 16.dp
 
@@ -86,9 +84,8 @@ fun RequestsScreen(nav: Nav) {
         all == null && loader.error != null -> ErrorBox(loader.error ?: "", onRetry = { loader.reload() })
         all == null -> Loading()
         else -> {
+            // Pedido ainda não atendido ou removido do catálogo não aparece
             val arrived = all.filter { it.item != null }
-            val waiting = all.filter { it.item == null }
-            val shown = if (filter == 2) waiting else arrived
             LazyVerticalGrid(
                 columns = GridCells.Adaptive(if (tv) 380.dp else 320.dp),
                 modifier = Modifier.fillMaxSize(),
@@ -102,11 +99,11 @@ fun RequestsScreen(nav: Nav) {
                             Column(Modifier.weight(1f)) {
                                 Text("Meus pedidos", style = MaterialTheme.typography.headlineMedium)
                                 Text(
-                                    "${arrived.size} chegaram · ${waiting.size} a caminho",
+                                    if (arrived.size == 1) "1 pedido disponível no catálogo" else "${arrived.size} pedidos disponíveis no catálogo",
                                     color = TextMuted, style = MaterialTheme.typography.bodyMedium,
                                 )
                             }
-                            if (filter == 1 && arrived.isNotEmpty()) SbButton(
+                            if (arrived.isNotEmpty()) SbButton(
                                 "Limpar", primary = false, icon = Icons.Filled.ClearAll, enabled = !loader.loading,
                                 onClick = { scope.launch { MyRequests.clearArrived(); loader.reload() } },
                             )
@@ -115,14 +112,10 @@ fun RequestsScreen(nav: Nav) {
                                 enabled = !loader.loading, onClick = { nonce++; loader.reload() },
                             )
                         }
-                        if (all.isNotEmpty()) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Chip("Chegaram · ${arrived.size}", selected = filter == 1, onClick = { filter = 1 })
-                            Chip("A caminho · ${waiting.size}", selected = filter == 2, onClick = { filter = 2 })
-                        }
                     }
                 }
-                if (shown.isEmpty()) item(span = { GridItemSpan(maxLineSpan) }) { EmptyRequests(all.isEmpty(), filter == 1) }
-                items(shown, key = { it.request.key }) { r ->
+                if (arrived.isEmpty()) item(span = { GridItemSpan(maxLineSpan) }) { EmptyRequests() }
+                items(arrived, key = { it.request.key }) { r ->
                     RequestCard(r, onOpen = { r.item?.let { nav.push(Route.Details(it.id)) } })
                 }
             }
@@ -171,7 +164,7 @@ private fun RequestCard(r: RequestView, onOpen: () -> Unit) {
 }
 
 @Composable
-private fun EmptyRequests(none: Boolean, arrivedTab: Boolean) {
+private fun EmptyRequests() {
     Column(
         Modifier.fillMaxWidth().padding(vertical = 48.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -180,14 +173,7 @@ private fun EmptyRequests(none: Boolean, arrivedTab: Boolean) {
         Box(Modifier.size(72.dp).clip(CircleShape).background(Surface2), contentAlignment = Alignment.Center) {
             Icon(Icons.Outlined.Inbox, contentDescription = null, tint = TextMuted, modifier = Modifier.size(36.dp))
         }
-        Text(if (none) "Nenhum pedido ainda" else "Nada aqui", style = MaterialTheme.typography.titleLarge)
-        Text(
-            when {
-                none -> "Busque um título que não está no catálogo e toque em Solicitar."
-                arrivedTab -> "Quando um pedido chegar ao catálogo, ele aparece aqui."
-                else -> "Nenhum pedido a caminho."
-            },
-            color = TextMuted,
-        )
+        Text("Nenhum pedido disponível", style = MaterialTheme.typography.titleLarge)
+        Text("Quando um pedido seu chegar ao catálogo, ele aparece aqui.", color = TextMuted)
     }
 }
