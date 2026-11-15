@@ -83,6 +83,16 @@ class Session {
         get() = str("seerr_user")
         set(v) = put("seerr_user", v)
 
+    /** Pedidos que a pessoa tirou da aba Pedidos (botão Limpar), por usuário. */
+    var dismissedRequests: Set<String>
+        get() = str("dismissed_requests_$userId").split('\n').filter { it.isNotBlank() }.toSet()
+        set(v) {
+            // As preferências do Java aceitam até 8 KB por valor: fica com os mais recentes
+            val keep = ArrayDeque(v.toList())
+            while (keep.sumOf { it.length + 1 } > 7_500) keep.removeFirst()
+            put("dismissed_requests_$userId", keep.joinToString("\n"))
+        }
+
     /** TV ao vivo externa (opcional): lista M3U e guia XMLTV. */
     var m3uUrl: String
         get() = str("m3u_url")

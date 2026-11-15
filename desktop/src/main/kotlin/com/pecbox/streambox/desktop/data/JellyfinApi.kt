@@ -191,6 +191,15 @@ class JellyfinApi(private val s: Session) {
         )
     ).items
 
+    /** Procura um filme ou série pelo código do TMDB (não depende do nome que o Jellyfin deu). */
+    suspend fun findByTmdb(tmdbId: Int, kind: String): Item? = items(
+        "/Items",
+        mapOf(
+            "userId" to s.userId, "recursive" to true, "includeItemTypes" to if (kind == "series") "Series" else "Movie",
+            "anyProviderIdEquals" to "Tmdb.$tmdbId", "limit" to 5, "fields" to "$FIELDS,ProviderIds",
+        )
+    ).items.firstOrNull { it.providerIds["Tmdb"] == tmdbId.toString() }
+
     /** Procura um filme ou série da biblioteca pelo nome (para saber se um pedido já chegou). */
     suspend fun findTitle(title: String, kind: String, year: Int?): Item? {
         val wanted = normalizeTitle(title)

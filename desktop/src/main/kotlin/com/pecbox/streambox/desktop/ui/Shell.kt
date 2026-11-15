@@ -25,6 +25,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Inbox
 import androidx.compose.material.icons.filled.LiveTv
 import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.PlayArrow
@@ -57,6 +58,7 @@ import androidx.compose.ui.unit.dp
 import com.pecbox.streambox.data.Item
 import com.pecbox.streambox.data.libraryItemTypes
 import com.pecbox.streambox.desktop.BuildConfig
+import com.pecbox.streambox.desktop.data.MyRequests
 import com.pecbox.streambox.desktop.data.Session
 import com.pecbox.streambox.desktop.player.PlayerController
 import com.pecbox.streambox.desktop.player.PlayerState
@@ -66,6 +68,7 @@ sealed interface Screen {
     data object Search : Screen
     data object Settings : Screen
     data object LiveTv : Screen
+    data object Requests : Screen
     data class Library(val view: Item) : Screen
     data class Details(val itemId: String) : Screen
 }
@@ -113,6 +116,7 @@ fun Shell(s: Session, player: PlayerController, nav: Nav) {
             RailItem(Icons.Filled.Home, "Início", nav.root == Screen.Home) { nav.go(Screen.Home) }
             RailItem(Icons.Filled.Search, "Buscar", nav.root == Screen.Search) { nav.go(Screen.Search) }
             RailItem(Icons.Filled.LiveTv, "TV ao vivo", nav.root == Screen.LiveTv) { nav.go(Screen.LiveTv) }
+            if (MyRequests.available(s)) RailItem(Icons.Filled.Inbox, "Pedidos", nav.root == Screen.Requests) { nav.go(Screen.Requests) }
             if (views.isNotEmpty()) {
                 Text("Bibliotecas", color = TextMuted, style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(start = 12.dp, top = 18.dp, bottom = 6.dp))
             }
@@ -136,6 +140,7 @@ fun Shell(s: Session, player: PlayerController, nav: Nav) {
                 Screen.Home -> HomeScreen(s, refreshKey, open, play)
                 Screen.Search -> SearchScreen(s, searchQuery, { searchQuery = it }, open)
                 Screen.LiveTv -> LiveTvScreen(s, player, openSettings = { nav.go(Screen.Settings) })
+                Screen.Requests -> RequestsScreen(s, open)
                 Screen.Settings -> SettingsScreen(s, logout = { player.stop(); s.logout() })
                 is Screen.Library -> LibraryScreen(s, sc.view, open)
                 is Screen.Details -> DetailsScreen(s, sc.itemId, refreshKey, back = { nav.back() }, play = play)

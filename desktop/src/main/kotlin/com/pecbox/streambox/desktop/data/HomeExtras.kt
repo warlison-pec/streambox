@@ -55,36 +55,7 @@ object HomeExtras {
         return (similar + byGenre).distinctBy { it.id }
     }
 
-    /**
-     * Pedidos desta pessoa (STRM Indexer e Seerr, feitos em qualquer aparelho) que já estão no catálogo
-     * e ainda não foram assistidos. Quem nunca pediu nada não vê a fileira.
-     */
-    suspend fun arrived(s: Session, max: Int = 20): List<Item> = coroutineScope {
-        val jf = s.jellyfin
-        val strm = async { if (s.indexer.enabled) runCatching { s.indexer.mine() }.getOrDefault(emptyList()) else emptyList() }
-        val seerr = async { runCatching { s.seerr.myRequests() }.getOrDefault(emptyList()) }
-
-        val fromStrm = strm.await().map { r ->
-            async {
-                val kind = if (r.kind == "movie") "movie" else "series"
-                runCatching { jf.findTitle(r.title, kind, r.year) }.getOrNull()
-            }
-        }
-        val fromSeerr = seerr.await().map { e ->
-            async {
-                val media = e.media ?: return@async null
-                // O próprio Seerr já diz qual é o item no Jellyfin quando chegou (4 = em parte, 5 = disponível)
-                media.jellyfinMediaId?.let { id -> runCatching { jf.item(id) }.getOrNull() }?.let { return@async it }
-                if (media.status < 4) return@async null
-                val tmdb = media.tmdbId ?: return@async null
-                val tv = e.type == "tv" || media.mediaType == "tv"
-                val d = runCatching { s.seerr.details(if (tv) "tv" else "movie", tmdb) }.getOrNull() ?: return@async null
-                runCatching { jf.findTitle(d.displayTitle, if (tv) "series" else "movie", d.year?.toIntOrNull()) }.getOrNull()
-            }
-        }
-        (fromSeerr + fromStrm).awaitAll().filterNotNull()
-            .filter { it.userData?.played != true }
-            .distinctBy { it.id }
-            .take(max)
-    }
+    /** Pedidos desta pessoa que estão no catálogo e ainda não foram assistidos (mesma regra da aba Pedidos). */
+    suspend fun arrived(s: Session, max: Int = 20): List<Item> =
+        MyRequests.arrived(s).map { it.item }.filter { it.userData?.played != true }.take(max)
 }
