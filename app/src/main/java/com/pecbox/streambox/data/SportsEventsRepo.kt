@@ -117,6 +117,7 @@ object SportsEventsRepo {
 
     /** Escudos dos próximos jogos, devagar (a API tem limite), para já aparecerem ao abrir a aba. */
     private fun prefetchBadges(evs: List<SportsGuide.Event>) {
+        if (App.session.indexerUrl.isNotBlank()) return   // o servidor já tem os escudos prontos
         if (prefetch?.isActive == true) return
         val teams = evs.asSequence().filter { it.isMatch && !it.replay }
             .flatMap { sequenceOf(it.home!!, it.away!!) }.distinct().take(PREFETCH_TEAMS).toList()

@@ -132,6 +132,11 @@ internal fun SportsEvents(filter: String, now: Long, pad: Dp) {
                 Chip("Só jogos", selected = onlyMatches, onClick = { onlyMatches = true })
                 Chip(if (replays) "Reprises: mostrando" else "Reprises: ocultas", selected = replays, onClick = { replays = !replays })
             }
+            // Crédito exigido pela licença do football-logos.cc
+            if (s.indexerUrl.isNotBlank()) {
+                Text("Escudos: football-logos.cc", color = TextMuted, style = MaterialTheme.typography.labelSmall,
+                    modifier = Modifier.padding(horizontal = pad, vertical = 2.dp))
+            }
             if (shown.isEmpty()) {
                 Text(
                     "Nenhum evento nos próximos dias" + (if (filter.isNotBlank()) " para \"$filter\"" else "") + ".",
@@ -235,18 +240,29 @@ private fun EventCard(e: SportsGuide.Event, now: Long, onPlay: (SportsGuide.Even
 @Composable
 private fun Team(name: String, modifier: Modifier) {
     val tv = LocalIsTv.current
-    val badges = App.session.badges
-    var url by remember(name) { mutableStateOf(badges.cached(name)) }
-    LaunchedEffect(name) { if (url == null) url = badges.lookup(name) }
+    val s = App.session
+    // Com o STRM Indexer: escudo do repositório do servidor (pronto em disco, um só download para todos).
+    // Sem ele (versão Comunidade): busca no TheSportsDB pelo próprio aparelho.
+    val server = s.indexerUrl.isNotBlank()
+    var url by remember(name) {
+        mutableStateOf(if (server) s.indexerUrl.trimEnd('/') + "/badge?team=" + java.net.URLEncoder.encode(name, "UTF-8") else s.badges.cached(name))
+    }
+    var ok by remember(name) { mutableStateOf(false) }
+    LaunchedEffect(name) { if (!server && url == null) url = s.badges.lookup(name) }
     val size = if (tv) 72.dp else 60.dp
     Column(modifier, horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Box(Modifier.size(size), contentAlignment = Alignment.Center) {
-            if (url != null) {
-                AsyncImage(url, name, contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize())
-            } else {
+            if (!ok) {
+                // iniciais até o escudo chegar (ou se não houver)
                 Box(Modifier.fillMaxSize().clip(CircleShape).background(teamColor(name)), contentAlignment = Alignment.Center) {
                     Text(teamInitials(name), color = Color.White, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
                 }
+            }
+            if (url != null) {
+                AsyncImage(
+                    url, name, contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize(),
+                    onSuccess = { ok = true }, onError = { ok = false },
+                )
             }
         }
         Text(name, style = MaterialTheme.typography.titleSmall, textAlign = TextAlign.Center, maxLines = 2, overflow = TextOverflow.Ellipsis)

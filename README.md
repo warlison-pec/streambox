@@ -21,7 +21,7 @@ Cliente Android leve para Jellyfin, com **um único APK para celular e TV** (And
 | Ajustes | Servidor, usuário, endereço da ponte de solicitações, limpar cache, sair |
 | Player | Retomada, progresso enviado ao servidor a cada 10 s; botões **Legendas** (embutidas, do servidor, baixar da internet), **Áudio** e **Qualidade** (Original/1080p/720p/480p/360p); botão Menu do controle abre as opções |
 | TV ao vivo | Canais do Jellyfin (Live TV) e **Minha lista**: M3U + guia EPG/XMLTV opcionais, com grupos, "Agora/Depois" e progresso |
-| Eventos esportivos | Aba da TV ao vivo com o guia de jogos e transmissões dos **canais de esporte**, montado pelo EPG: escudos "Time A x Time B" (TheSportsDB), data e horário, "Agora" no ar, o mesmo jogo em vários canais junto e reprises ocultas |
+| Eventos esportivos | Aba da TV ao vivo com o guia de jogos e transmissões dos **canais de esporte**, montado pelo EPG: escudos "Time A x Time B" (repositório do STRM Indexer montado a partir do [football-logos.cc](https://football-logos.cc), com TheSportsDB para o que ele não tem; na versão Comunidade, TheSportsDB direto), data e horário, "Agora" no ar, o mesmo jogo em vários canais junto e reprises ocultas |
 
 ## Windows e Linux
 
@@ -90,3 +90,7 @@ app/src/main/java/com/pecbox/streambox/
 - Favoritos / Minha lista
 - Downloads offline no celular
 - site para Download do StreamBox-Comunidade-0.7.0.apk https://midia.pecbox.com.br/#/downloads?p=comunidade
+
+## Créditos
+
+Escudos dos times: **Logos: [football-logos.cc](https://football-logos.cc)** (os escudos pertencem aos respectivos clubes e federações) e [TheSportsDB](https://www.thesportsdb.com).
