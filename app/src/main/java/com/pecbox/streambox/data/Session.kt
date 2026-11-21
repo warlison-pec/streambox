@@ -211,5 +211,6 @@ class Session(context: Context) {
     val jellyfin = JellyfinApi(this)
     val indexer = IndexerApi(this)
     val externalTv = ExternalLiveTv(this, context.cacheDir)
+    val badges = TeamBadges(context, http)
     val seerr = SeerrApi(this)
 }

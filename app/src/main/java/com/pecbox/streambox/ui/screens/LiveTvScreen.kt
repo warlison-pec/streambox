@@ -110,6 +110,7 @@ fun LiveTvScreen(nav: Nav) {
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Chip("Jellyfin", selected = tab == 0, onClick = { tabChoice = 0; group = ""; genre = "" })
                 Chip("Minha lista", selected = tab == 1, onClick = { tabChoice = 1; group = ""; genre = "" })
+                Chip("Eventos esportivos", selected = tab == 2, onClick = { tabChoice = 2; group = ""; genre = "" })
                 // Último canal assistido: abre direto nele (como ligar o decodificador)
                 val ctx = LocalContext.current
                 val last = remember { LiveQueue.loadLast(ctx) }
@@ -122,12 +123,14 @@ fun LiveTvScreen(nav: Nav) {
             }
             SbTextField(
                 value = filter, onValueChange = { filter = it }, singleLine = true,
-                placeholder = { Text("Filtrar canais…") }, leadingIcon = { Icon(Icons.Filled.Search, null) },
+                placeholder = { Text(if (tab == 2) "Filtrar eventos, times ou canais…" else "Filtrar canais…") }, leadingIcon = { Icon(Icons.Filled.Search, null) },
                 modifier = Modifier.fillMaxWidth().widthIn(max = 560.dp),
             )
         }
 
-        if (tab == 0) {
+        if (tab == 2) {
+            SportsEvents(if (jfLoader.error != null && jfLoader.data == null) emptyList() else jfLoader.data, filter, now, pad)
+        } else if (tab == 0) {
             JellyfinChannels(jfLoader.data, jfLoader.error, jfLoader.loading, filter, genre, { genre = it }, now, pad, onRetry = { jfLoader.reload() })
         } else if (!hasExternal) {
             Column(Modifier.padding(pad), verticalArrangement = Arrangement.spacedBy(12.dp)) {

@@ -68,6 +68,7 @@ data class Item(
     @SerialName("CurrentProgram") val currentProgram: Item? = null,
     @SerialName("StartDate") val startDate: String? = null,
     @SerialName("EndDate") val endDate: String? = null,
+    @SerialName("ChannelId") val channelId: String? = null,
     // capítulos (usados para achar abertura/créditos quando o servidor não tem segmentos)
     @SerialName("Chapters") val chapters: List<Chapter> = emptyList(),
 ) {

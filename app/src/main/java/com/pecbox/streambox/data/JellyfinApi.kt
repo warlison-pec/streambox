@@ -456,6 +456,27 @@ class JellyfinApi(private val s: Session) {
         )
     ).items
 
+    /**
+     * Programação (EPG) dos canais pedidos, de [pastHours] horas atrás até [hours] horas à frente, por ordem de início.
+     * Vai em lotes para o endereço não ficar grande demais.
+     */
+    suspend fun programs(channelIds: List<String>, hours: Int = 72, pastHours: Int = 0): List<Item> {
+        val fmt = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", java.util.Locale.US)
+            .apply { timeZone = java.util.TimeZone.getTimeZone("UTC") }
+        val now = System.currentTimeMillis()
+        return channelIds.distinct().chunked(40).flatMap { ids ->
+            items(
+                "/LiveTv/Programs",
+                mapOf(
+                    "userId" to s.userId, "channelIds" to ids.joinToString(","),
+                    "minEndDate" to fmt.format(java.util.Date(now - pastHours * 3600_000L)), "maxStartDate" to fmt.format(java.util.Date(now + hours * 3600_000L)),
+                    "sortBy" to "StartDate", "limit" to 3000, "enableImages" to false, "enableUserData" to false,
+                    "enableTotalRecordCount" to false,
+                )
+            ).items
+        }
+    }
+
     suspend fun closeLiveStream(liveStreamId: String) {
         postText("/LiveStreams/Close", "{}", mapOf("liveStreamId" to liveStreamId))
     }
