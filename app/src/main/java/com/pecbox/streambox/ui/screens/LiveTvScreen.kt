@@ -129,7 +129,7 @@ fun LiveTvScreen(nav: Nav) {
         }
 
         if (tab == 2) {
-            SportsEvents(if (jfLoader.error != null && jfLoader.data == null) emptyList() else jfLoader.data, filter, now, pad)
+            SportsEvents(filter, now, pad)
         } else if (tab == 0) {
             JellyfinChannels(jfLoader.data, jfLoader.error, jfLoader.loading, filter, genre, { genre = it }, now, pad, onRetry = { jfLoader.reload() })
         } else if (!hasExternal) {

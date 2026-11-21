@@ -19,8 +19,6 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
-import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
@@ -45,19 +43,16 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import com.pecbox.streambox.App
-import com.pecbox.streambox.data.ExternalGuide
-import com.pecbox.streambox.data.Item
+import com.pecbox.streambox.data.SportsEventsRepo
 import com.pecbox.streambox.data.SportsGuide
 import com.pecbox.streambox.playExternalChannel
 import com.pecbox.streambox.playJellyfinChannel
 import com.pecbox.streambox.player.LiveQueue
-import com.pecbox.streambox.ui.ChannelGenres
 import com.pecbox.streambox.ui.components.Chip
 import com.pecbox.streambox.ui.components.ErrorBox
 import com.pecbox.streambox.ui.components.FilterBar
 import com.pecbox.streambox.ui.components.Loading
 import com.pecbox.streambox.ui.components.tvFocus
-import com.pecbox.streambox.ui.rememberLoader
 import com.pecbox.streambox.ui.theme.Danger
 import com.pecbox.streambox.ui.theme.LocalIsTv
 import com.pecbox.streambox.ui.theme.Orange
@@ -69,57 +64,34 @@ import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
 import java.util.Locale
-import java.util.TimeZone
 
 /**
  * Aba "Eventos" da TV ao vivo: jogos e transmissões ao vivo dos canais de esporte, tirados do EPG.
  * Fontes: canais de esporte do Jellyfin e, se houver, da "Minha lista" (M3U + XMLTV).
  */
 @Composable
-internal fun SportsEvents(jfChannels: List<Item>?, filter: String, now: Long, pad: Dp) {
+internal fun SportsEvents(filter: String, now: Long, pad: Dp) {
     val s = App.session
     val tv = LocalIsTv.current
     val ctx = LocalContext.current
+    val repo = SportsEventsRepo
 
-    val sportJf = remember(jfChannels) { jfChannels.orEmpty().filter { ChannelGenres.classify(it.name) == "Esportes" } }
-    val jfKey = sportJf.joinToString(",") { it.id }
-    val programs = rememberLoader("live:events:$jfKey") {
-        if (sportJf.isEmpty()) emptyList() else s.jellyfin.programs(sportJf.map { it.id }, pastHours = 24)
-    }
-    // Minha lista: usa o mesmo carregamento (e cache) da aba "Minha lista"
-    val extKey = "live:ext:${s.m3uUrl}|${s.epgUrl}"
-    val ext = if (s.m3uUrl.isNotBlank() && s.epgUrl.isNotBlank()) rememberLoader(extKey) { s.externalTv.load(s.m3uUrl, s.epgUrl) } else null
-    val extGuide: ExternalGuide? = ext?.data
+    // O guia é montado em segundo plano desde que o app abriu; aqui só confere se está velho
+    LaunchedEffect(Unit) { repo.start(); repo.refreshIfStale() }
 
     var onlyMatches by rememberSaveable { mutableStateOf(false) }
     var replays by rememberSaveable { mutableStateOf(false) }
 
-    // Remonta o guia a cada 30 s (o relógio da tela) para tirar o que já acabou
+    val events = repo.events
+    val sportJf = repo.sportChannels
     val nowBucket = now / 60_000
-    val events = remember(programs.data, extGuide, sportJf, nowBucket) {
-        val byId = sportJf.associateBy { it.id }
-        val sources = ArrayList<SportsGuide.Source>()
-        for (p in programs.data.orEmpty()) {
-            val ch = p.channelId?.let { byId[it] } ?: continue
-            val a = parseUtc(p.startDate) ?: continue
-            val b = parseUtc(p.endDate) ?: continue
-            sources += SportsGuide.Source(p.name, a, b, "jf:${ch.id}", ch.name, s.jellyfin.channelLogo(ch), jfChannel = ch)
+    // Conta leve (lista já pronta): só filtra e tira o que já acabou
+    val shown = remember(events, onlyMatches, replays, filter, nowBucket) {
+        events.filter { e ->
+            e.stop > now && (!onlyMatches || e.isMatch) && (replays || !e.replay) &&
+                (filter.isBlank() || e.title.contains(filter, true) || e.info?.contains(filter, true) == true ||
+                    e.channels.any { it.name.contains(filter, true) })
         }
-        extGuide?.let { g ->
-            for (ch in g.channels) {
-                if (ChannelGenres.classify(ch.name, ch.group) != "Esportes") continue
-                for (p in g.programmes[ch.id].orEmpty()) {
-                    sources += SportsGuide.Source(p.title, p.start, p.stop, "ext:${ch.url}", ch.name, ch.logo, extChannel = ch)
-                }
-            }
-        }
-        SportsGuide.build(sources, System.currentTimeMillis())
-    }
-
-    val shown = events.filter { e ->
-        (!onlyMatches || e.isMatch) && (replays || !e.replay) &&
-            (filter.isBlank() || e.title.contains(filter, true) || e.info?.contains(filter, true) == true ||
-                e.channels.any { it.name.contains(filter, true) })
     }
 
     fun play(e: SportsGuide.Event, ch: SportsGuide.EventChannel = e.channels.first()) {
@@ -136,24 +108,24 @@ internal fun SportsEvents(jfChannels: List<Item>?, filter: String, now: Long, pa
         val others = sportJf.filter { c -> e.channels.none { it.jfChannel?.id == c.id } }.map { c ->
             LiveQueue.Entry(
                 c.name, s.jellyfin.channelLogo(c), c.currentProgram?.name, jfId = c.id, number = c.channelNumber, group = "Esportes",
-                nowStart = parseUtc(c.currentProgram?.startDate) ?: 0L, nowEnd = parseUtc(c.currentProgram?.endDate) ?: 0L,
+                nowStart = SportsEventsRepo.parseUtc(c.currentProgram?.startDate) ?: 0L,
+                nowEnd = SportsEventsRepo.parseUtc(c.currentProgram?.endDate) ?: 0L,
             )
         }
-        val entries = main + others
-        LiveQueue.entries = entries
+        LiveQueue.entries = main + others
         ch.jfChannel?.let { ctx.playJellyfinChannel(it); return }
         ch.extChannel?.let { ctx.playExternalChannel(it.name, it.url, it.userAgent, it.referer) }
     }
 
-    val loading = (jfChannels == null) || (programs.loading && programs.data == null) || (ext?.loading == true && extGuide == null)
+    val loading = !repo.loaded
     when {
         loading && events.isEmpty() -> Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally) {
             Loading(Modifier.padding(top = 40.dp))
             Text("Montando o guia de eventos…", color = TextMuted)
         }
-        sportJf.isEmpty() && extGuide == null && !loading ->
+        events.isEmpty() && repo.error != null -> ErrorBox("Guia indisponível: ${repo.error}", onRetry = { repo.refreshIfStale(force = true) })
+        sportJf.isEmpty() && events.isEmpty() ->
             ErrorBox("Nenhum canal de esportes encontrado. O guia de eventos usa a programação (EPG) dos canais de esporte.")
-        events.isEmpty() && programs.error != null -> ErrorBox("Guia indisponível: ${programs.error}", onRetry = { programs.reload() })
         else -> Column(Modifier.fillMaxSize()) {
             FilterBar(Modifier.padding(horizontal = pad)) {
                 Chip("Todos os eventos", selected = !onlyMatches, onClick = { onlyMatches = false })
@@ -177,7 +149,7 @@ internal fun SportsEvents(jfChannels: List<Item>?, filter: String, now: Long, pa
                     item(key = "h:$label", span = { GridItemSpan(maxLineSpan) }) {
                         Text(label, style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(top = 8.dp))
                     }
-                    items(list, key = { it.id }) { e -> EventCard(e, now, onPlay = { ch -> play(e, ch) }) }
+                    items(list, key = { it.id }, contentType = { "event" }) { e -> EventCard(e, now, onPlay = { ch -> play(e, ch) }) }
                 }
             }
         }
@@ -244,8 +216,8 @@ private fun EventCard(e: SportsGuide.Event, now: Long, onPlay: (SportsGuide.Even
         }
         // canais: o cartão abre o primeiro; com mais de um, cada um tem seu botão
         if (e.channels.size > 1) {
-            LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                items(e.channels, key = { it.key }) { ch ->
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                e.channels.take(4).forEach { ch ->
                     val cs = RoundedCornerShape(50)
                     Text(
                         ch.name, style = MaterialTheme.typography.labelMedium, maxLines = 1,
@@ -332,5 +304,3 @@ private fun dayLabel(ms: Long, now: Long): String = when (Math.round((dayStart(m
 
 private fun hhmm(ms: Long): String = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(ms))
 
-private val utcFormat = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US).apply { timeZone = TimeZone.getTimeZone("UTC") }
-private fun parseUtc(v: String?): Long? = v?.let { runCatching { synchronized(utcFormat) { utcFormat.parse(it.take(19))?.time } }.getOrNull() }

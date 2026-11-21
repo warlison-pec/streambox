@@ -33,6 +33,7 @@ object SportsGuide {
 
     data class Event(
         val id: String,
+        val key: String,            // título normalizado (para juntar e comparar sem refazer a conta)
         val title: String,          // "Flamengo x Palmeiras" ou "MotoGP: GP de Portugal"
         val home: String?,          // times (só em jogos)
         val away: String?,
@@ -66,6 +67,12 @@ object SportsGuide {
         RegexOption.IGNORE_CASE,
     )
 
+    private val SPLIT = Regex("""\s+[-–|]\s+|\s*:\s+""")
+    private val NOT_TEAM = Regex("""^(d[aeo]s?|em|no|na|para|com)\s""", RegexOption.IGNORE_CASE)
+    private val PAREN_END = Regex("""\s*\((?:[^)]*)\)\s*$""")
+    private val MARKS = Regex("\\p{M}+")
+    private val NON_ALNUM = Regex("[^a-z0-9]+")
+
     class Parsed(val title: String, val home: String?, val away: String?, val info: String?, val live: Boolean, val replay: Boolean)
 
     /** Lê o título do EPG. Null quando não é um evento (programa de estúdio, noticiário…). */
@@ -77,17 +84,17 @@ object SportsGuide {
         t = REPLAY.replace(t, "").trim().trim('-', '–', ':', ' ')
         if (t.isEmpty()) return null
         // "Final, Jogo 2: Brusque x Pinhalzinho", "Palmeiras x Flamengo - Campeonato Brasileiro : Palmeiras x Flamengo"
-        val parts = t.split(Regex("""\s+[-–|]\s+|\s*:\s+""")).map { it.trim() }.filter { it.isNotEmpty() }
+        val parts = t.split(SPLIT).map { it.trim() }.filter { it.isNotEmpty() }
         val matchPart = parts.firstOrNull { VERSUS.matches(it) && it.length <= 80 }
         if (matchPart != null) {
             val m = VERSUS.find(matchPart)!!
             val home = cleanTeam(m.groupValues[1])
             val away = cleanTeam(m.groupValues[2])
             // "Raio X do Brasileirão" não é jogo
-            val notTeam = Regex("""^(d[aeo]s?|em|no|na|para|com)\s""", RegexOption.IGNORE_CASE)
-            if (home.isNotEmpty() && away.isNotEmpty() && home.length <= 40 && away.length <= 40 && !notTeam.containsMatchIn(away)) {
+            if (home.isNotEmpty() && away.isNotEmpty() && home.length <= 40 && away.length <= 40 && !NOT_TEAM.containsMatchIn(away)) {
                 val key = norm(matchPart)
-                val info = parts.filter { norm(it) != key && !norm(it).contains(norm(home)) }.distinct()
+                val homeKey = norm(home)
+                val info = parts.filter { val n = norm(it); n != key && !n.contains(homeKey) }.distinct()
                     .joinToString(" · ").ifBlank { null }
                 return Parsed("$home x $away", home, away, info, live, replay)
             }
@@ -97,10 +104,10 @@ object SportsGuide {
         return Parsed(t, null, null, null, live = live, replay = replay)
     }
 
-    private fun cleanTeam(s: String) = s.replace(Regex("""\s*\((?:[^)]*)\)\s*$"""), "").trim().trim('-', '–', ':', ',', ' ')
+    private fun cleanTeam(s: String) = s.replace(PAREN_END, "").trim().trim('-', '–', ':', ',', ' ')
 
     fun norm(s: String): String =
-        Normalizer.normalize(s, Normalizer.Form.NFD).replace(Regex("\\p{M}+"), "").lowercase().replace(Regex("[^a-z0-9]+"), "")
+        Normalizer.normalize(s, Normalizer.Form.NFD).replace(MARKS, "").lowercase().replace(NON_ALNUM, "")
 
     /**
      * Monta os eventos: junta blocos seguidos do mesmo evento no mesmo canal, junta o mesmo evento em
@@ -111,6 +118,7 @@ object SportsGuide {
         val out = ArrayList<Event>()
         val firstSeen = HashMap<String, Long>()
         val lastOnChannel = HashMap<String, Int>()      // canal + evento → índice do último bloco em [out]
+        val byKey = HashMap<String, MutableList<Int>>()  // evento → índices em [out] (sem varrer a lista toda)
         for (src in sources.sortedBy { it.start }) {
             val p = parse(src.title) ?: continue
             val key = norm(p.title)
@@ -125,9 +133,9 @@ object SportsGuide {
             if (first == null) firstSeen[key] = src.start
             val replay = p.replay || (!p.live && first != null && src.start - first > 45 * 60_000L)
             val ch = EventChannel(src.channelKey, src.channelName, src.channelLogo, src.jfChannel, src.extChannel)
-            val i = out.indexOfFirst {
-                norm(it.title) == key && it.replay == replay && kotlin.math.abs(it.start - src.start) <= 45 * 60_000L
-            }
+            val i = byKey[key]?.firstOrNull {
+                out[it].replay == replay && kotlin.math.abs(out[it].start - src.start) <= 45 * 60_000L
+            } ?: -1
             if (i >= 0) {
                 val e = out[i]
                 out[i] = e.copy(
@@ -137,10 +145,11 @@ object SportsGuide {
                 lastOnChannel[chKey] = i
             } else {
                 out += Event(
-                    id = "$key@${src.start}", title = p.title, home = p.home, away = p.away, info = p.info,
+                    id = "$key@${src.start}", key = key, title = p.title, home = p.home, away = p.away, info = p.info,
                     start = src.start, stop = src.stop, live = p.live, replay = replay, channels = listOf(ch),
                 )
                 lastOnChannel[chKey] = out.lastIndex
+                byKey.getOrPut(key) { ArrayList() } += out.lastIndex
             }
         }
         return out.filter { it.stop > now }.sortedWith(compareBy<Event> { it.start }.thenBy { it.title })

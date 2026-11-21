@@ -141,6 +141,8 @@ fun AppShell() {
     // Voltar numa aba (Ajustes, Avisos, Buscar…) leva ao Início; no Início, sai do app
     BackHandler(enabled = stack.size == 1 && stack.first() != Route.Home) { nav.root(Route.Home) }
     LaunchedEffect(App.session.userId) {
+        // Guia de eventos esportivos: vai sendo montado por baixo dos panos (pronto ao abrir a aba)
+        com.pecbox.streambox.data.SportsEventsRepo.start()
         MyRequests.ensureLoaded()
         // Confere nos servidores (STRM e Seerr) se esta pessoa tem pedidos: só então a aba aparece
         runCatching { MyRequests.views(force = true) }
