@@ -8,6 +8,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.KeyEvent
@@ -99,6 +100,11 @@ class PlayerActivity : ComponentActivity() {
         const val EXTRA_JF_LIVE = "jf_live"  // canal ao vivo do Jellyfin
         const val EXTRA_UA = "ua"            // cabeçalhos exigidos pelo canal (lista M3U)
         const val EXTRA_REFERER = "referer"
+        private const val EXTRA_CONTINUE = "continue"  // episódio aberto pelo player anterior (não zera o tempo parado)
+        private const val IDLE_LIMIT_MS = 2 * 60 * 60_000L  // sem tocar no controle por 2 h: pergunta se ainda está assistindo
+        private const val IDLE_ANSWER_MS = 60_000L          // tempo para responder antes de encerrar
+        /** Último toque no controle (vale entre episódios, que abrem um player novo). */
+        private var lastInteractionAt = 0L
         private const val TICKS_PER_MS = 10_000L
         private const val EXIT_WINDOW_MS = 3_000L   // TV ao vivo: tempo para o segundo Voltar
 
@@ -163,6 +169,29 @@ class PlayerActivity : ComponentActivity() {
         (getSystemService(UI_MODE_SERVICE) as UiModeManager).currentModeType == Configuration.UI_MODE_TYPE_TELEVISION
     }
     private var userPaused = false             // pausa pedida pelo usuário: a única que o ao vivo respeita
+    private var inBackground = false           // app fora da tela (Fire TV desligado, botão Home…)
+
+    // "Você ainda está assistindo?" depois de muito tempo sem tocar no controle
+    private lateinit var stillCard: LinearLayout
+    private lateinit var stillCountdown: TextView
+    private lateinit var stillYes: TextView
+    private lateinit var stillExit: TextView
+    private var stillDeadline = 0L
+    private var stillSel = 0
+    private val stillOpen get() = ::stillCard.isInitialized && stillCard.visibility == View.VISIBLE
+    private val idleTask = object : Runnable {
+        override fun run() {
+            val now = SystemClock.elapsedRealtime()
+            if (stillOpen) {
+                val left = ((stillDeadline - now + 999) / 1000).coerceAtLeast(0)
+                stillCountdown.text = "Se ninguém responder, a reprodução será encerrada em $left s."
+                if (left <= 0) { stopForIdle(); return }
+            } else if (!inBackground && now - lastInteractionAt >= IDLE_LIMIT_MS) {
+                showStillWatching()
+            }
+            handler.postDelayed(this, 1000)
+        }
+    }
     private var reconnectPending = false
     private var lastPos = -1L
     private var frozenMs = 0L
@@ -173,7 +202,7 @@ class PlayerActivity : ComponentActivity() {
     private val liveWatchdog = object : Runnable {
         override fun run() {
             val p = player ?: return
-            if (isLive && !userPaused && !reconnectPending) {
+            if (isLive && !userPaused && !reconnectPending && !inBackground) {
                 if (!p.playWhenReady) p.playWhenReady = true
                 if (p.playbackState == Player.STATE_IDLE) { p.prepare() }
                 val pos = p.currentPosition
@@ -299,6 +328,8 @@ class PlayerActivity : ComponentActivity() {
         jfLive = intent.getBooleanExtra(EXTRA_JF_LIVE, false)
         title = intent.getStringExtra(EXTRA_TITLE).orEmpty()
         if (itemId == null && externalUrl == null) { finish(); return }
+        // Aberto pelo usuário: começa a contar agora. Próximo episódio automático: continua a contagem.
+        if (!intent.getBooleanExtra(EXTRA_CONTINUE, false) || lastInteractionAt == 0L) lastInteractionAt = SystemClock.elapsedRealtime()
 
         WindowCompat.setDecorFitsSystemWindows(window, false)
         WindowInsetsControllerCompat(window, window.decorView).let {
@@ -331,7 +362,9 @@ class PlayerActivity : ComponentActivity() {
             )
         }
         buildOverlays(root)
+        buildStillWatching(root)
         setContentView(root)
+        handler.postDelayed(idleTask, 1000)
         installControls()
 
         // HTTP com User-Agent e redirecionamento http↔https (comum em listas IPTV)
@@ -788,7 +821,7 @@ class PlayerActivity : ComponentActivity() {
         Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
         handler.postDelayed({
             reconnectPending = false
-            if (player != null) { userPaused = false; load(currentUrl, 0, currentIsHls, currentIsHls || currentDirectHls) }
+            if (player != null && !inBackground) { userPaused = false; load(currentUrl, 0, currentIsHls, currentIsHls || currentDirectHls) }
         }, (1500L * reconnects).coerceAtMost(15_000L))
     }
 
@@ -1991,7 +2024,85 @@ class PlayerActivity : ComponentActivity() {
                 .putExtra(EXTRA_ID, n.id)
                 .putExtra(EXTRA_TITLE, label)
                 .putExtra(EXTRA_START_TICKS, resume)
+                .putExtra(EXTRA_CONTINUE, true)
         )
+        finish()
+    }
+
+    /* ---------------------- "Você ainda está assistindo?" ---------------------- */
+
+    private fun buildStillWatching(root: FrameLayout) {
+        stillCountdown = TextView(this).apply { setTextColor(0xFFBDBDBD.toInt()); setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f) }
+        stillYes = pill("Sim, continuar", true).apply { setOnClickListener { hideStillWatching() } }
+        stillExit = pill("Sair", false).apply { setOnClickListener { stopForIdle(byUser = true) } }
+        stillCard = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+            isClickable = true                       // toques no cartão não passam para o vídeo
+            setPadding(dp(24), dp(22), dp(24), dp(22))
+            background = GradientDrawable().apply { cornerRadius = dp(18).toFloat(); setColor(0xF2121212.toInt()); setStroke(dp(1), 0x33FFFFFF) }
+            addView(TextView(this@PlayerActivity).apply {
+                text = "VOCÊ AINDA ESTÁ ASSISTINDO?"; setTextColor(0xFFFF7A00.toInt()); setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+                typeface = Typeface.DEFAULT_BOLD; letterSpacing = 0.12f
+            })
+            addView(TextView(this@PlayerActivity).apply {
+                text = "Faz mais de 2 horas que o controle não é usado."
+                setTextColor(Color.WHITE); setTextSize(TypedValue.COMPLEX_UNIT_SP, 18f); typeface = Typeface.DEFAULT_BOLD
+                setPadding(0, dp(8), 0, dp(4))
+            })
+            addView(stillCountdown)
+            addView(LinearLayout(this@PlayerActivity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                setPadding(0, dp(16), 0, 0)
+                addView(stillYes)
+                addView(stillExit, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginStart = dp(10) })
+            })
+        }
+        root.addView(stillCard, FrameLayout.LayoutParams(dp(440), ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER))
+    }
+
+    private fun showStillWatching() {
+        view.hideController()
+        stillDeadline = SystemClock.elapsedRealtime() + IDLE_ANSWER_MS
+        stillSel = 0
+        stillCountdown.text = "Se ninguém responder, a reprodução será encerrada em ${IDLE_ANSWER_MS / 1000} s."
+        stillCard.visibility = View.VISIBLE
+        stillCard.bringToFront()
+        highlightStill()
+    }
+
+    private fun hideStillWatching() {
+        stillCard.visibility = View.GONE
+        lastInteractionAt = SystemClock.elapsedRealtime()
+    }
+
+    private fun highlightStill() {
+        listOf(stillYes, stillExit).forEachIndexed { i, b ->
+            b.background = pillBg(i == stillSel, b.tag == true)
+            b.setTextColor(if (i == stillSel) Color.BLACK else Color.WHITE)
+        }
+    }
+
+    /** Cartão aberto: ←/→ escolhe, OK confirma; qualquer outra tecla já mostra que tem alguém ali. */
+    private fun stillKey(event: KeyEvent) {
+        if (event.action != KeyEvent.ACTION_DOWN || event.repeatCount > 0) return
+        when (event.keyCode) {
+            KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                stillSel = if (event.keyCode == KeyEvent.KEYCODE_DPAD_RIGHT) 1 else 0
+                highlightStill()
+            }
+            KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER, KeyEvent.KEYCODE_BUTTON_A ->
+                (if (stillSel == 1) stillExit else stillYes).performClick()
+            else -> hideStillWatching()
+        }
+    }
+
+    /** Ninguém respondeu (ou escolheu Sair): fecha o player, que registra onde parou, e deixa a TV dormir. */
+    private fun stopForIdle(byUser: Boolean = false) {
+        stillCard.visibility = View.GONE
+        handler.removeCallbacks(idleTask)
+        player?.pause()
+        if (!byUser) Toast.makeText(this, "Reprodução encerrada por inatividade", Toast.LENGTH_LONG).show()
         finish()
     }
 
@@ -2004,6 +2115,7 @@ class PlayerActivity : ComponentActivity() {
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         val code = event.keyCode
         val down = event.action == KeyEvent.ACTION_DOWN
+        if (stillOpen) { stillKey(event); return true }
         if (syncOpen && syncKey(event)) return true
         // Lista de episódios aberta: ↑ ou Voltar fecham (↑ volta aos controles)
         if (episodesOpen) {
@@ -2082,16 +2194,36 @@ class PlayerActivity : ComponentActivity() {
         if (!isLive) player?.pause()
     }
 
+    override fun onUserInteraction() {
+        super.onUserInteraction()
+        lastInteractionAt = SystemClock.elapsedRealtime()
+    }
+
     override fun onStart() {
         super.onStart()
         Notices.playerSink = noticeSink
+        if (inBackground) {
+            inBackground = false
+            lastInteractionAt = SystemClock.elapsedRealtime()   // voltou para a tela: tem alguém olhando
+            // Ao vivo foi parado ao sair: sintoniza de novo, já no ponto atual da transmissão
+            if (isLive && player != null && currentUrl.isNotEmpty()) {
+                userPaused = false
+                load(currentUrl, 0, currentIsHls, currentIsHls || currentDirectHls)
+            }
+        }
     }
 
     override fun onStop() {
         super.onStop()
         // Ao trocar de episódio o player novo já assumiu antes deste parar
         if (Notices.playerSink === noticeSink) Notices.playerSink = null
-        if (isFinishing) release()
+        if (isFinishing) { release(); return }
+        // Fire TV desligado / Home: o ao vivo não pode continuar tocando (e baixando) com a tela apagada
+        inBackground = true
+        if (isLive) {
+            handler.removeCallbacks(stallTask)
+            player?.stop()
+        } else player?.pause()
     }
 
     override fun onDestroy() {
@@ -2116,6 +2248,7 @@ class PlayerActivity : ComponentActivity() {
         handler.removeCallbacks(endLogoPeek)
         handler.removeCallbacks(hideExitHint)
         handler.removeCallbacks(hideNotice)
+        handler.removeCallbacks(idleTask)
         if (started && !isLive) {
             val id = itemId
             val posMs = p.currentPosition
