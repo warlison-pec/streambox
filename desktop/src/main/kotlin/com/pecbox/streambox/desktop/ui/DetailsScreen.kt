@@ -33,6 +33,17 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.withFrameNanos
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.outlined.CheckCircle
+import androidx.compose.material3.Icon
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -56,6 +67,13 @@ fun DetailsScreen(s: Session, itemId: String, refreshKey: Int, back: () -> Unit,
     var seasons by remember(itemId) { mutableStateOf<List<Item>>(emptyList()) }
     var season by remember(itemId) { mutableStateOf<Item?>(null) }
     var episodes by remember(itemId) { mutableStateOf<List<Item>?>(null) }
+    // Todos os episódios da série: acha onde a pessoa parou mesmo em outra temporada
+    var allEpisodes by remember(itemId) { mutableStateOf<List<Item>?>(null) }
+    // Marcado/desmarcado agora, enquanto o servidor confirma
+    val watched = remember(itemId) { mutableStateMapOf<String, Boolean>() }
+    fun isPlayed(e: Item) = watched[e.id] ?: (e.userData?.played == true)
+    val scope = rememberCoroutineScope()
+    val playFocus = remember { FocusRequester() }
 
     LaunchedEffect(itemId, refreshKey, retry) {
         error = null
@@ -65,9 +83,13 @@ fun DetailsScreen(s: Session, itemId: String, refreshKey: Int, back: () -> Unit,
             if (it.isSeries) {
                 val list = jf.seasons(it.id)
                 seasons = list
+                val all = runCatching { jf.seriesEpisodes(it.id) }.getOrNull()
+                if (all != null) { allEpisodes = all; watched.clear() }
                 if (season == null) {
-                    // Abre na temporada do próximo episódio a assistir
-                    season = list.firstOrNull { s -> (s.userData?.unplayed ?: 0) > 0 } ?: list.firstOrNull()
+                    // Abre na temporada de onde a pessoa parou (ou do próximo episódio a assistir)
+                    val resumeSeason = all?.let { e -> resumePoint(e) { x -> x.userData?.played == true } }?.seasonId
+                    season = list.firstOrNull { s -> s.id == resumeSeason }
+                        ?: list.firstOrNull { s -> (s.userData?.unplayed ?: 0) > 0 } ?: list.firstOrNull()
                 }
             }
         } catch (e: Exception) {
@@ -84,6 +106,22 @@ fun DetailsScreen(s: Session, itemId: String, refreshKey: Int, back: () -> Unit,
     if (i == null) {
         if (error != null) ErrorBox(error ?: "", onRetry = { retry++ }) else Loading()
         return
+    }
+    // Foco no botão principal ao abrir: Enter já assiste (ou continua de onde parou)
+    LaunchedEffect(i.id) {
+        repeat(6) {
+            withFrameNanos { }
+            if (runCatching { playFocus.requestFocus() }.isSuccess) return@LaunchedEffect
+        }
+    }
+
+    /** ✓ de um episódio: muda na hora e confirma no servidor (desfaz se falhar). */
+    fun toggle(ep: Item) {
+        val now = !isPlayed(ep)
+        watched[ep.id] = now
+        scope.launch {
+            if (runCatching { jf.setPlayed(ep.id, now) }.isFailure) watched.remove(ep.id)
+        }
     }
 
     LazyColumn(Modifier.fillMaxSize()) {
@@ -114,19 +152,24 @@ fun DetailsScreen(s: Session, itemId: String, refreshKey: Int, back: () -> Unit,
                         }
                         Spacer(Modifier.height(4.dp))
                         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            val focusMain = Modifier.focusRequester(playFocus)
                             if (i.isSeries) {
-                                val next = episodes?.firstOrNull { it.userData?.played != true }
-                                if (next != null) {
-                                    SbButton(
-                                        if (next.progress > 0f) "Continuar ${next.episodeLabel.substringBefore(" ·")}" else "Assistir ${next.episodeLabel.substringBefore(" ·")}",
-                                        onClick = { play(next, false) }, icon = Icons.Filled.PlayArrow,
-                                    )
-                                }
+                                // Onde a pessoa parou, olhando todas as temporadas
+                                val next = allEpisodes?.let { resumePoint(it, ::isPlayed) }
+                                    ?: episodes?.firstOrNull { !isPlayed(it) } ?: episodes?.firstOrNull()
+                                SbButton(
+                                    when {
+                                        next == null -> "Assistir"
+                                        (next.userData?.positionTicks ?: 0L) > 0L && !isPlayed(next) -> "Continuar ${next.episodeLabel.substringBefore(" ·")}"
+                                        else -> "Assistir ${next.episodeLabel.substringBefore(" ·")}"
+                                    },
+                                    onClick = { next?.let { play(it, false) } }, icon = Icons.Filled.PlayArrow, modifier = focusMain,
+                                )
                             } else if (i.progress > 0f || (i.userData?.positionTicks ?: 0) > 0) {
-                                SbButton("Continuar de ${formatTicks(i.userData?.positionTicks ?: 0)}", onClick = { play(i, false) }, icon = Icons.Filled.PlayArrow)
+                                SbButton("Continuar de ${formatTicks(i.userData?.positionTicks ?: 0)}", onClick = { play(i, false) }, icon = Icons.Filled.PlayArrow, modifier = focusMain)
                                 SbButton("Do início", onClick = { play(i, true) }, icon = Icons.Filled.Replay, primary = false)
                             } else {
-                                SbButton("Assistir", onClick = { play(i, true) }, icon = Icons.Filled.PlayArrow)
+                                SbButton("Assistir", onClick = { play(i, true) }, icon = Icons.Filled.PlayArrow, modifier = focusMain)
                             }
                         }
                     }
@@ -148,14 +191,14 @@ fun DetailsScreen(s: Session, itemId: String, refreshKey: Int, back: () -> Unit,
             }
             val eps = episodes
             if (eps == null) item { Loading(Modifier.fillMaxWidth().height(200.dp)) }
-            else items(eps, key = { it.id }) { ep -> EpisodeRow(s, ep) { play(ep, false) } }
+            else items(eps, key = { it.id }) { ep -> EpisodeRow(s, ep, isPlayed(ep), onToggle = { toggle(ep) }) { play(ep, false) } }
             item { Spacer(Modifier.height(40.dp)) }
         }
     }
 }
 
 @Composable
-private fun EpisodeRow(s: Session, ep: Item, onClick: () -> Unit) {
+private fun EpisodeRow(s: Session, ep: Item, played: Boolean, onToggle: () -> Unit, onClick: () -> Unit) {
     val interaction = remember { MutableInteractionSource() }
     val shape = RoundedCornerShape(12.dp)
     Row(
@@ -177,12 +220,41 @@ private fun EpisodeRow(s: Session, ep: Item, onClick: () -> Unit) {
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(ep.episodeLabel, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f, fill = false), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                if (ep.userData?.played == true) Text("  ✓ Assistido", color = Orange, style = MaterialTheme.typography.labelMedium)
+                if (played) Text("  ✓ Assistido", color = Orange, style = MaterialTheme.typography.labelMedium)
             }
             ep.runtimeLabel?.let { Text(it, color = TextMuted, style = MaterialTheme.typography.labelMedium) }
             ep.overview?.let { Text(it, color = TextMuted, maxLines = 3, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium) }
         }
+        Spacer(Modifier.width(16.dp))
+        // ✓ marca/desmarca só este episódio
+        val check = remember { MutableInteractionSource() }
+        Box(
+            Modifier.size(44.dp).highlight(check, CircleShape, 1.1f).clip(CircleShape)
+                .background(if (played) Orange.copy(alpha = 0.18f) else Color.White.copy(alpha = 0.06f))
+                .hoverable(check).clickable(check, indication = null, onClick = onToggle),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                if (played) Icons.Filled.CheckCircle else Icons.Outlined.CheckCircle,
+                contentDescription = if (played) "Desmarcar episódio" else "Marcar episódio como visto",
+                tint = if (played) Orange else TextMuted,
+            )
+        }
     }
+}
+
+/**
+ * Onde a pessoa parou na série: o episódio começado mais recente; senão o primeiro não visto
+ * depois do último assistido; senão o primeiro não visto; senão o primeiro da série.
+ */
+private fun resumePoint(all: List<Item>, isPlayed: (Item) -> Boolean): Item? {
+    if (all.isEmpty()) return null
+    val inProgress = all.filter { !isPlayed(it) && (it.userData?.positionTicks ?: 0L) > 0L }
+        .maxByOrNull { it.userData?.lastPlayed.orEmpty() }
+    if (inProgress != null) return inProgress
+    val lastSeen = all.indices.filter { isPlayed(all[it]) }.maxByOrNull { all[it].userData?.lastPlayed.orEmpty() }
+    if (lastSeen != null) all.drop(lastSeen + 1).firstOrNull { !isPlayed(it) }?.let { return it }
+    return all.firstOrNull { !isPlayed(it) } ?: all.first()
 }
 
 fun formatTicks(ticks: Long): String {

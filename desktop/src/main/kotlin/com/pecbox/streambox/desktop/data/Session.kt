@@ -2,6 +2,7 @@ package com.pecbox.streambox.desktop.data
 
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.setValue
 import com.pecbox.streambox.data.AppJson
 import com.pecbox.streambox.data.AuthResult
@@ -142,6 +143,32 @@ class Session {
         if (!choice.off) prefs.put("${kind}_choice", json)   // "Desligadas" vale só para a própria série
         runCatching { prefs.flush() }
     }
+
+    /** Ordem das fileiras do Início (chaves de [HomeSections]); fileira nova entra na posição padrão. */
+    var homeOrder: List<String>
+        get() {
+            val saved = str("home_order").split(',').filter { it in HomeSections.DEFAULT_ORDER }.distinct()
+            if (saved.isEmpty()) return HomeSections.DEFAULT_ORDER
+            val order = saved.toMutableList()
+            HomeSections.DEFAULT_ORDER.forEachIndexed { i, key ->
+                if (key in order) return@forEachIndexed
+                val before = HomeSections.DEFAULT_ORDER.take(i).lastOrNull { it in order }
+                order.add(if (before == null) 0 else order.indexOf(before) + 1, key)
+            }
+            return order
+        }
+        set(v) { put("home_order", v.joinToString(",")); homeVersion++ }
+
+    /** Fileiras do Início que a pessoa desligou. */
+    var homeHidden: Set<String>
+        get() = str("home_hidden").split(',').filter { it.isNotBlank() }.toSet()
+        set(v) { put("home_hidden", v.joinToString(",")); homeVersion++ }
+
+    fun homeShows(section: String) = section !in homeHidden
+
+    /** Muda quando a pessoa mexe nas fileiras: o Início se redesenha (e carrega o que foi ligado). */
+    var homeVersion by mutableIntStateOf(0)
+        private set
 
     var loggedIn by mutableStateOf(server.isNotBlank() && token.isNotBlank() && userId.isNotBlank())
         private set

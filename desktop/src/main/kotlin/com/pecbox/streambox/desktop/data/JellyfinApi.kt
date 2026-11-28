@@ -225,6 +225,29 @@ class JellyfinApi(private val s: Session) {
     suspend fun episodes(seriesId: String, seasonId: String): List<Item> =
         items("/Shows/$seriesId/Episodes", mapOf("userId" to s.userId, "seasonId" to seasonId, "fields" to FIELDS)).items
 
+    /** Todos os episódios da série, em ordem (temporadas e episódios). */
+    suspend fun seriesEpisodes(seriesId: String): List<Item> =
+        items("/Shows/$seriesId/Episodes", mapOf("userId" to s.userId, "fields" to FIELDS)).items
+
+    /** Marca (ou desmarca) como assistido. */
+    suspend fun setPlayed(itemId: String, played: Boolean) {
+        val req = Request.Builder()
+            .url(url("/UserPlayedItems/$itemId", mapOf("userId" to s.userId)))
+            .header("Authorization", authHeader())
+        s.http.fetch(if (played) req.post("".toRequestBody(JSON_TYPE)).build() else req.delete().build())
+    }
+
+    /** Lançamentos recentes mais bem avaliados do catálogo (nota do TMDB/IMDb que o Jellyfin guarda). */
+    suspend fun topRatedRecent(sinceYear: Int, limit: Int = 40): List<Item> = items(
+        "/Items",
+        mapOf(
+            "userId" to s.userId, "recursive" to true, "includeItemTypes" to "Movie,Series",
+            "years" to (sinceYear..java.util.Calendar.getInstance().get(java.util.Calendar.YEAR)).joinToString(","),
+            "minCommunityRating" to 6.5, "sortBy" to "CommunityRating,DateCreated", "sortOrder" to "Descending",
+            "isPlayed" to false, "limit" to limit, "fields" to FIELDS, "enableTotalRecordCount" to false,
+        )
+    ).items
+
     suspend fun nextEpisode(episode: Item): Item? {
         val seriesId = episode.seriesId ?: return null
         if (!episode.isEpisode) return null

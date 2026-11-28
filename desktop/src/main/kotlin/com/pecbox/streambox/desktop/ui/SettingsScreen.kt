@@ -26,6 +26,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.graphics.Color
+import androidx.compose.runtime.key
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
+import com.pecbox.streambox.desktop.data.HomeSections
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
@@ -44,6 +50,7 @@ fun SettingsScreen(s: Session, logout: () -> Unit) {
         verticalArrangement = Arrangement.spacedBy(20.dp),
     ) {
         Text("Ajustes", style = MaterialTheme.typography.headlineMedium)
+        Section { HomeSectionsEditor(s) }
         Section { IndexerSettings(s) }
         Section { SeerrSettings(s) }
         Section { LiveTvSettings(s) }
@@ -220,4 +227,45 @@ private fun PlayerSettings(s: Session) {
         Chip("Tela cheia", selected = full, onClick = { full = true; s.fullscreen = true })
         Chip("Janela", selected = !full, onClick = { full = false; s.fullscreen = false })
     }
+}
+
+/** Fileiras do Início: ligar, desligar e mudar a ordem (vale ao voltar para o Início). */
+@Composable
+private fun HomeSectionsEditor(s: Session) {
+    var order by remember { mutableStateOf(s.homeOrder) }
+    var hidden by remember { mutableStateOf(s.homeHidden) }
+    fun save(newOrder: List<String> = order, newHidden: Set<String> = hidden) {
+        order = newOrder; hidden = newHidden
+        s.homeOrder = newOrder; s.homeHidden = newHidden
+    }
+    fun move(i: Int, delta: Int) {
+        val j = i + delta
+        if (j in order.indices) save(newOrder = order.toMutableList().apply { add(j, removeAt(i)) })
+    }
+
+    Text("Tela inicial", style = MaterialTheme.typography.titleLarge)
+    Text("Ligue, desligue e mude a ordem das fileiras do Início.", color = TextMuted)
+    order.forEachIndexed { i, section ->
+        key(section) {
+            val on = section !in hidden
+            Row(
+                Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(Surface2).padding(horizontal = 14.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text("${i + 1}. ${HomeSections.label(section)}", color = if (on) TextMain else TextMuted, style = MaterialTheme.typography.titleMedium)
+                    HomeSections.hint(section)?.let { Text(it, color = TextMuted, style = MaterialTheme.typography.bodyMedium) }
+                }
+                SbButton("↑", onClick = { move(i, -1) }, primary = false, enabled = i > 0)
+                SbButton("↓", onClick = { move(i, 1) }, primary = false, enabled = i < order.lastIndex)
+                Switch(
+                    checked = on,
+                    onCheckedChange = { save(newHidden = if (it) hidden - section else hidden + section) },
+                    colors = SwitchDefaults.colors(checkedTrackColor = Orange, checkedThumbColor = Color.Black),
+                )
+            }
+        }
+    }
+    SbButton("Ordem padrão", onClick = { save(newOrder = HomeSections.DEFAULT_ORDER, newHidden = emptySet()) }, primary = false)
 }

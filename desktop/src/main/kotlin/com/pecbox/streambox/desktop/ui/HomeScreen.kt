@@ -42,6 +42,8 @@ import com.pecbox.streambox.data.Item
 import com.pecbox.streambox.data.friendly
 import com.pecbox.streambox.data.libraryItemTypes
 import com.pecbox.streambox.desktop.data.HomeExtras
+import com.pecbox.streambox.desktop.data.HomeSections
+import com.pecbox.streambox.desktop.data.Trending
 import com.pecbox.streambox.desktop.data.Session
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -59,6 +61,7 @@ private class HomeData(
 private class HomeExtrasData(
     val because: List<Pair<String, List<Item>>>,   // "Para você que assistiu X"
     val arrived: List<Item>,                       // "Seu pedido chegou"
+    val trending: List<Item>,                      // "Em alta"
 )
 
 @Composable
@@ -69,7 +72,8 @@ fun HomeScreen(s: Session, refreshKey: Int, open: (Item) -> Unit, play: (Item, B
     var retry by remember { mutableIntStateOf(0) }
     var extras by remember { mutableStateOf<HomeExtrasData?>(null) }
 
-    LaunchedEffect(refreshKey, retry) {
+    val homeVersion = s.homeVersion   // Ajustes → Tela inicial mudou: redesenha e recarrega
+    LaunchedEffect(refreshKey, retry, homeVersion) {
         error = null
         try {
             data = coroutineScope {
@@ -88,7 +92,11 @@ fun HomeScreen(s: Session, refreshKey: Int, open: (Item) -> Unit, play: (Item, B
         extras = coroutineScope {
             val because = async { withTimeoutOrNull(15_000) { runCatching { HomeExtras.forYou(jf, resume) }.getOrNull() }.orEmpty() }
             val arrived = async { withTimeoutOrNull(15_000) { runCatching { HomeExtras.arrived(s) }.getOrNull() }.orEmpty() }
-            HomeExtrasData(because.await(), arrived.await())
+            val trending = async {
+                if (!s.homeShows(HomeSections.TRENDING)) emptyList()
+                else withTimeoutOrNull(10_000) { runCatching { Trending.load(s) }.getOrNull() }.orEmpty()
+            }
+            HomeExtrasData(because.await(), arrived.await(), trending.await())
         }
     }
 
@@ -96,52 +104,68 @@ fun HomeScreen(s: Session, refreshKey: Int, open: (Item) -> Unit, play: (Item, B
     when {
         d != null -> LazyColumn(Modifier.fillMaxSize()) {
             if (d.featured.isNotEmpty()) item { Hero(s, d.featured, open, play) }
-            item {
-                MediaRow("Continuar assistindo", d.resume) { item ->
-                    MediaCard(
-                        title = if (item.isEpisode) item.seriesName ?: item.name else item.name,
-                        subtitle = if (item.isEpisode) item.episodeLabel else item.year?.toString(),
-                        image = jf.landscapeImage(item), landscape = true, width = 300.dp,
-                        progress = item.progress, onClick = { play(item, false) },
-                    )
-                }
-            }
-            item {
-                MediaRow("Próximos episódios", d.nextUp) { item ->
-                    MediaCard(
-                        title = item.seriesName ?: item.name, subtitle = item.episodeLabel,
-                        image = jf.landscapeImage(item), landscape = true, width = 300.dp,
-                        onClick = { play(item, false) },
-                    )
-                }
-            }
-            extras?.let { x ->
-                for ((name, list) in x.because) {
-                    item {
-                        MediaRow("Para você que assistiu $name", list) { item ->
+            // Fileiras na ordem escolhida em Ajustes → Tela inicial (as desligadas não aparecem)
+            for (section in s.homeOrder) {
+                if (!s.homeShows(section)) continue
+                when (section) {
+                    HomeSections.RESUME -> item {
+                        MediaRow("Continuar assistindo", d.resume) { item ->
                             MediaCard(
-                                title = item.name, subtitle = item.year?.toString(), image = jf.posterImage(item),
-                                rating = item.rating, onClick = { open(item) },
+                                title = if (item.isEpisode) item.seriesName ?: item.name else item.name,
+                                subtitle = if (item.isEpisode) item.episodeLabel else item.year?.toString(),
+                                image = jf.landscapeImage(item), landscape = true, width = 300.dp,
+                                progress = item.progress, onClick = { play(item, false) },
                             )
                         }
                     }
-                }
-                if (x.arrived.isNotEmpty()) item {
-                    MediaRow("Seu pedido chegou", x.arrived) { item ->
-                        MediaCard(
-                            title = item.name, subtitle = item.year?.toString(), image = jf.posterImage(item),
-                            badge = "CHEGOU", rating = item.rating, onClick = { open(item) },
-                        )
+                    HomeSections.NEXT_UP -> item {
+                        MediaRow("Próximos episódios", d.nextUp) { item ->
+                            MediaCard(
+                                title = item.seriesName ?: item.name, subtitle = item.episodeLabel,
+                                image = jf.landscapeImage(item), landscape = true, width = 300.dp,
+                                onClick = { play(item, false) },
+                            )
+                        }
                     }
-                }
-            }
-            for ((view, list) in d.latest) {
-                item {
-                    MediaRow("Adicionados em ${view.name}", list) { item ->
-                        MediaCard(
-                            title = item.name, subtitle = item.year?.toString(), image = jf.posterImage(item),
-                            played = item.userData?.played == true, rating = item.rating, onClick = { open(item) },
-                        )
+                    HomeSections.TRENDING -> extras?.trending?.takeIf { it.isNotEmpty() }?.let { list ->
+                        item {
+                            MediaRow("Em alta", list) { item ->
+                                MediaCard(
+                                    title = item.name, subtitle = item.year?.toString(), image = jf.posterImage(item),
+                                    rating = item.rating, onClick = { open(item) },
+                                )
+                            }
+                        }
+                    }
+                    HomeSections.BECAUSE -> extras?.because?.forEach { (name, list) ->
+                        item {
+                            MediaRow("Para você que assistiu $name", list) { item ->
+                                MediaCard(
+                                    title = item.name, subtitle = item.year?.toString(), image = jf.posterImage(item),
+                                    rating = item.rating, onClick = { open(item) },
+                                )
+                            }
+                        }
+                    }
+                    HomeSections.ARRIVED -> extras?.arrived?.takeIf { it.isNotEmpty() }?.let { list ->
+                        item {
+                            MediaRow("Seu pedido chegou", list) { item ->
+                                MediaCard(
+                                    title = item.name, subtitle = item.year?.toString(), image = jf.posterImage(item),
+                                    badge = "CHEGOU", rating = item.rating, onClick = { open(item) },
+                                )
+                            }
+                        }
+                    }
+                    HomeSections.LATEST -> for ((view, list) in d.latest) {
+                        item {
+                            MediaRow("Adicionados em ${view.name}", list) { item ->
+                                MediaCard(
+                                    title = item.name, subtitle = item.year?.toString(), image = jf.posterImage(item),
+                                    played = item.userData?.played == true, rating = item.rating, onClick = { open(item) },
+                                )
+                            }
+                        }
                     }
                 }
             }

@@ -84,6 +84,14 @@ class SeerrApi(private val s: Session) {
         return AppJson.decodeFromString(SeerrResult.serializer(), text)
     }
 
+    /** O que está em alta no TMDB agora (filmes e séries), pela página "Descobrir" do Seerr. */
+    suspend fun trending(page: Int = 1): List<SeerrResult> {
+        if (!enabled) return emptyList()
+        val text = s.http.fetch(request("/discover/trending?page=$page&language=pt-BR").build())
+        return AppJson.decodeFromString(SeerrSearch.serializer(), text).results
+            .filter { it.mediaType == "movie" || it.mediaType == "tv" }
+    }
+
     fun logout() {
         s.seerrCookie = ""
         s.seerrApiKey = ""
