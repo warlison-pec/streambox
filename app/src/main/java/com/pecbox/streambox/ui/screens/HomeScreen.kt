@@ -82,6 +82,7 @@ import coil.compose.AsyncImage
 import com.pecbox.streambox.App
 import com.pecbox.streambox.data.Item
 import com.pecbox.streambox.data.HomeSections
+import com.pecbox.streambox.data.Trending
 import com.pecbox.streambox.data.MyRequests
 import com.pecbox.streambox.data.Recommendations
 import com.pecbox.streambox.data.RequestState
@@ -117,6 +118,7 @@ private data class HomeData(
     val latest: List<Pair<String, List<Item>>>,
     val because: List<Pair<String, List<Item>>> = emptyList(),   // "Para você que assistiu X"
     val arrived: List<Item> = emptyList(),                       // "Seu pedido chegou"
+    val trending: List<Item> = emptyList(),                      // "Em alta"
 )
 
 @Composable
@@ -140,6 +142,11 @@ fun HomeScreen(nav: Nav) {
                         .mapNotNull { it.item }.filter { it.userData?.played != true }.distinctBy { it.id }.take(20)
                 }.orEmpty()
             }
+            // "Em alta": tendências do TMDB (Seerr) que estão no catálogo, ou os lançamentos mais bem avaliados
+            val trending = async {
+                if (!s.homeShows(HomeSections.TRENDING)) emptyList()
+                else withTimeoutOrNull(8_000) { runCatching { Trending.load(s) }.getOrDefault(emptyList()) }.orEmpty()
+            }
             val libs = jf.views().filter { libraryItemTypes(it.collectionType) != null && it.collectionType != "boxsets" }
             val latest = libs.map { v ->
                 v.name to async { runCatching { jf.latest(v.id, libraryItemTypes(v.collectionType) ?: "Movie,Series") }.getOrDefault(emptyList()) }
@@ -155,7 +162,7 @@ fun HomeScreen(nav: Nav) {
             val featured = (0 until maxOf(m.size, sr.size)).flatMap { i -> listOfNotNull(m.getOrNull(i), sr.getOrNull(i)) }
             HomeData(
                 featured, resumeList, next.await(), favs.await(), latest.map { (n, d) -> n to d.await() },
-                because = because.await(), arrived = arrived.await(),
+                because = because.await(), arrived = arrived.await(), trending = trending.await(),
             )
         }
     }
@@ -178,6 +185,7 @@ fun HomeScreen(nav: Nav) {
             featured = d.featured.unseen(), favorites = d.favorites.unseen(), latest = d.latest.map { (n, l) -> n to l.unseen() },
             because = d.because.map { (n, l) -> n to l.filterNot { Watched.isPlayed(it) } },
             arrived = d.arrived.filterNot { Watched.isPlayed(it) },
+            trending = d.trending.filterNot { Watched.isPlayed(it) },
             // Episódio já assistido nunca fica em "Continuar" nem em "Próximos episódios"
             resume = d.resume.filterNot { Watched.isPlayed(it) },
             nextUp = d.nextUp.filterNot { Watched.isPlayed(it) },
@@ -255,6 +263,7 @@ private fun buildRows(data: HomeData): List<HomeRow> {
             HomeSections.BECAUSE -> data.because.forEachIndexed { i, (name, list) ->
                 rows += HomeRow("because:$i", "Para você que assistiu $name", list, RowStyle.POSTER)
             }
+            HomeSections.TRENDING -> rows += HomeRow(section, "Em alta", data.trending, RowStyle.POSTER)
             HomeSections.ARRIVED -> rows += HomeRow(section, "Seu pedido chegou", data.arrived, RowStyle.ARRIVED)
             HomeSections.FAVORITES -> rows += HomeRow(section, "Minha lista", data.favorites.filter { Favorites.isFavorite(it) }, RowStyle.POSTER)
             HomeSections.LATEST -> data.latest.forEachIndexed { i, (name, list) ->

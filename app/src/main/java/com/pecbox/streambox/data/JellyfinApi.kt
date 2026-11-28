@@ -166,6 +166,17 @@ class JellyfinApi(private val s: Session) {
         )
     ).items
 
+    /** Lançamentos recentes mais bem avaliados do catálogo (nota do TMDB/IMDb que o Jellyfin guarda). */
+    suspend fun topRatedRecent(sinceYear: Int, limit: Int = 40): List<Item> = items(
+        "/Items",
+        mapOf(
+            "userId" to s.userId, "recursive" to true, "includeItemTypes" to "Movie,Series",
+            "years" to (sinceYear..java.util.Calendar.getInstance().get(java.util.Calendar.YEAR)).joinToString(","),
+            "minCommunityRating" to 6.5, "sortBy" to "CommunityRating,DateCreated", "sortOrder" to "Descending",
+            "limit" to limit, "fields" to FIELDS, "enableTotalRecordCount" to false, "isPlayed" to unplayedOnly(),
+        )
+    ).items
+
     suspend fun latest(parentId: String, types: String = "Movie,Series", limit: Int = 20): List<Item> = items(
         "/Items",
         mapOf(

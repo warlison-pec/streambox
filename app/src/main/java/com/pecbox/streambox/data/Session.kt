@@ -119,8 +119,16 @@ class Session(context: Context) {
     /** Ordem das fileiras da tela inicial (chaves de [HomeSections]); as que faltarem vão para o fim. */
     var homeOrder: List<String>
         get() {
-            val saved = prefs.getString("home_order", null)?.split(',')?.filter { it in HomeSections.DEFAULT_ORDER }.orEmpty()
-            return (saved + HomeSections.DEFAULT_ORDER).distinct()
+            val saved = prefs.getString("home_order", null)?.split(',')?.filter { it in HomeSections.DEFAULT_ORDER }?.distinct().orEmpty()
+            if (saved.isEmpty()) return HomeSections.DEFAULT_ORDER
+            // Fileira nova (de uma versão mais nova do app): entra logo depois da que vem antes dela no padrão
+            val order = saved.toMutableList()
+            HomeSections.DEFAULT_ORDER.forEachIndexed { i, key ->
+                if (key in order) return@forEachIndexed
+                val before = HomeSections.DEFAULT_ORDER.take(i).lastOrNull { it in order }
+                order.add(if (before == null) 0 else order.indexOf(before) + 1, key)
+            }
+            return order
         }
         set(v) = prefs.edit().putString("home_order", v.joinToString(",")).apply()
 

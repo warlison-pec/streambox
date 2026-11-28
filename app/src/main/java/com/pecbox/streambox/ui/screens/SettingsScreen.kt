@@ -106,6 +106,8 @@ fun SettingsScreen(onNotices: () -> Unit = {}) {
         Info("Versão do app", BuildConfig.VERSION_NAME)
         if (!tv) SbButton(if (Notices.unread > 0) "Avisos (${Notices.unread})" else "Avisos", onClick = onNotices, primary = false)
 
+        QuickConnectAuthorize()
+
         Text("Tela inicial", style = MaterialTheme.typography.titleLarge)
         Text("Ligue, desligue e mude a ordem das fileiras do Início.", color = TextMuted)
         ToggleLine("Ocultar assistidos", "Esconde dos destaques, da Minha lista e de \"Adicionados em…\" o que você já viu.", hideWatched) {
@@ -115,8 +117,6 @@ fun SettingsScreen(onNotices: () -> Unit = {}) {
         HomeSectionsEditor()
 
         NoticeSettings()
-
-        QuickConnectAuthorize()
 
         Text("Solicitações (STRM Indexer)", style = MaterialTheme.typography.titleLarge)
         Text(

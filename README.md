@@ -12,7 +12,7 @@ Cliente Android leve para Jellyfin, com **um único APK para celular e TV** (And
 | Tela | O que faz |
 |---|---|
 | Login | Endereço do servidor + usuário/senha do Jellyfin |
-| Início | Destaque, Continuar assistindo, Próximo episódio, Para você que assistiu… (sugestões pelo histórico), Seu pedido chegou, Minha lista, Adicionados recentemente. Ordem e quais aparecem: em Ajustes → Tela inicial |
+| Início | Destaque, Continuar assistindo, Próximo episódio, Em alta (tendências do TMDB via Seerr que estão no catálogo), Para você que assistiu… (sugestões pelo histórico), Seu pedido chegou, Minha lista, Adicionados recentemente. Ordem e quais aparecem: em Ajustes → Tela inicial |
 | Pedidos | Tudo o que a pessoa pediu (STRM Indexer e Seerr) com a situação de cada pedido. Só aparece para quem já pediu algo |
 | Avisos | Novidades (filme, série nova, episódio novo), pedidos que chegaram, mensagens do servidor e novas versões; filtros por tipo e escolha do que gera aviso em Ajustes |
 | Filmes / Séries | Grade paginada com ordenação (A–Z, recentes, lançamento, avaliação) |

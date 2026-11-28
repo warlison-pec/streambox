@@ -21,6 +21,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.focusRestorer
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
@@ -138,8 +139,10 @@ fun AppShell() {
     val nav = remember { Nav(stack) }
     val holder = rememberSaveableStateHolder()
     BackHandler(enabled = stack.size > 1) { nav.back() }
-    // Voltar numa aba (Ajustes, Avisos, Buscar…) leva ao Início; no Início, sai do app
+    // Voltar numa aba (Ajustes, Avisos, Buscar…) leva ao Início
     BackHandler(enabled = stack.size == 1 && stack.first() != Route.Home) { nav.root(Route.Home) }
+    // No Início: Voltar duas vezes pergunta se quer fechar o app (antes ele só ia para o fundo)
+    ExitOnDoubleBack(enabled = stack.size == 1 && stack.first() == Route.Home)
     LaunchedEffect(App.session.userId) {
         // Guia de eventos esportivos: vai sendo montado por baixo dos panos (pronto ao abrir a aba)
         com.pecbox.streambox.data.SportsEventsRepo.start()
@@ -263,6 +266,13 @@ private fun TvDrawerShell(
 
     // Tela nova (pelo menu, por um cartão ou pelo Voltar): confere se o foco chegou nela
     LaunchedEffect(screenKey) { ensureContentFocus() }
+    // O item em foco sumiu (lista recarregou, episódio marcado etc.): sem isso o controle "travava",
+    // porque nenhuma tecla tinha para onde ir. Devolve o foco para a tela.
+    LaunchedEffect(contentHasFocus, open) {
+        if (open || contentHasFocus) return@LaunchedEffect
+        delay(120)
+        ensureContentFocus()
+    }
 
     BackHandler(enabled = open) { close() }
     LaunchedEffect(open) {

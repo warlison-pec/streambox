@@ -48,6 +48,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -99,25 +100,42 @@ private fun DetailsContent(item: Item, nav: Nav, onChanged: () -> Unit) {
     val tv = LocalIsTv.current
     val pad = if (tv) 40.dp else 16.dp
     val playFocus = remember { FocusRequester() }
-    if (tv) LaunchedEffect(item.id) { runCatching { playFocus.requestFocus() } }
+    // TV: ao abrir, o foco já fica no botão principal (OK = assistir de onde parou).
+    // Tenta por alguns quadros: o botão pode ainda não estar na tela no primeiro.
+    if (tv) LaunchedEffect(item.id) {
+        repeat(6) {
+            withFrameNanos { }
+            if (runCatching { playFocus.requestFocus() }.isSuccess) return@LaunchedEffect
+        }
+    }
 
-    // Séries: temporadas, episódios e o próximo episódio a assistir
+    // Séries: temporadas, episódios e o ponto onde a pessoa parou
     val scope = rememberCoroutineScope()
     val seasonsLoader = if (item.isSeries) rememberLoader("seasons:${item.id}") { jf.seasons(item.id) } else null
     val seasons = seasonsLoader?.data.orEmpty()
+    // Todos os episódios da série: dá para achar onde a pessoa parou mesmo em outra temporada
+    val allEpisodesLoader = if (item.isSeries) rememberLoader("allEpisodes:${item.id}") { jf.seriesEpisodes(item.id) } else null
+    val resumeEpisode = allEpisodesLoader?.data?.let { resumePoint(it) }
     var seasonId by rememberSaveable(item.id) { mutableStateOf<String?>(null) }
-    val selectedSeason = seasons.firstOrNull { it.id == seasonId } ?: seasons.firstOrNull { (it.userData?.unplayed ?: 0) > 0 } ?: seasons.firstOrNull()
+    val selectedSeason = seasons.firstOrNull { it.id == seasonId }
+        ?: seasons.firstOrNull { it.id == resumeEpisode?.seasonId }
+        ?: seasons.firstOrNull { (it.userData?.unplayed ?: 0) > 0 } ?: seasons.firstOrNull()
+    // Fixa a temporada escolhida: antes, ao marcar episódios como vistos, a temporada "padrão"
+    // mudava sozinha, a lista trocava embaixo do foco e a navegação travava.
+    LaunchedEffect(selectedSeason?.id, allEpisodesLoader?.loading) {
+        if (seasonId == null && selectedSeason != null && allEpisodesLoader?.loading != true) seasonId = selectedSeason.id
+    }
     val episodesLoader = if (selectedSeason != null)
         rememberLoader("episodes:${selectedSeason.id}") { jf.episodes(item.id, selectedSeason.id) }
     else null
     val episodes = episodesLoader?.data.orEmpty()
-    val nextEpisode = episodes.firstOrNull { !Watched.isPlayed(it) } ?: episodes.firstOrNull()
+    val nextEpisode = resumeEpisode ?: episodes.firstOrNull { !Watched.isPlayed(it) } ?: episodes.firstOrNull()
 
     /** Marca/desmarca e recarrega o que está na tela. */
     fun toggle(target: Item, children: List<Item> = emptyList()) {
         scope.launch {
             if (Watched.toggle(ctx, target, children) != null) {
-                onChanged(); seasonsLoader?.reload(); episodesLoader?.reload()
+                onChanged(); seasonsLoader?.reload(); episodesLoader?.reload(); allEpisodesLoader?.reload()
             }
         }
     }
@@ -172,10 +190,16 @@ private fun DetailsContent(item: Item, nav: Nav, onChanged: () -> Unit) {
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     when {
                         isCollection -> Text("${children.size} títulos nesta coleção", color = TextMuted)
+                        // Sempre focável (mesmo enquanto os episódios carregam), para o OK funcionar ao entrar
                         item.isSeries -> SbButton(
-                            if (nextEpisode != null) "Assistir ${nextEpisode.episodeLabel.substringBefore(" ·")}" else "Assistir",
+                            when {
+                                nextEpisode == null -> "Assistir"
+                                (nextEpisode.userData?.positionTicks ?: 0L) > 0L && !Watched.isPlayed(nextEpisode) ->
+                                    "Continuar ${nextEpisode.episodeLabel.substringBefore(" ·")}"
+                                else -> "Assistir ${nextEpisode.episodeLabel.substringBefore(" ·")}"
+                            },
                             onClick = { nextEpisode?.let { ctx.play(it) } },
-                            icon = Icons.Filled.PlayArrow, enabled = nextEpisode != null,
+                            icon = Icons.Filled.PlayArrow,
                             modifier = Modifier.focusRequester(playFocus)
                         )
                         position > 0 -> {
@@ -249,7 +273,7 @@ private fun DetailsContent(item: Item, nav: Nav, onChanged: () -> Unit) {
                     Row(Modifier.padding(horizontal = pad).padding(bottom = 6.dp)) {
                         SbButton(
                             if (allSeen) "Desmarcar ${selectedSeason.name}" else "Marcar ${selectedSeason.name} como vista",
-                            onClick = { toggleSeason(scope, ctx, selectedSeason, episodes, !allSeen) { onChanged(); seasonsLoader?.reload(); episodesLoader?.reload() } },
+                            onClick = { toggleSeason(scope, ctx, selectedSeason, episodes, !allSeen) { onChanged(); seasonsLoader?.reload(); episodesLoader?.reload(); allEpisodesLoader?.reload() } },
                             icon = if (allSeen) Icons.Filled.CheckCircle else Icons.Outlined.CheckCircle,
                             primary = false,
                         )
@@ -285,12 +309,16 @@ private fun EpisodeRow(ep: Item, modifier: Modifier, onToggle: () -> Unit, onCli
     val jf = App.session.jellyfin
     val tv = LocalIsTv.current
     val shape = RoundedCornerShape(12.dp)
+    // A linha e o ✓ são irmãos (antes o ✓ ficava dentro da linha clicável e o controle não chegava nele)
     Row(
-        modifier
-            .fillMaxWidth()
+        modifier.fillMaxWidth().clip(shape).background(Surface),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+    Row(
+        Modifier
+            .weight(1f)
             .tvFocus(shape, 1.02f)
             .clip(shape)
-            .background(Surface)
             .clickable(onClick = onClick)
             .padding(10.dp),
         horizontalArrangement = Arrangement.spacedBy(14.dp),
@@ -314,10 +342,11 @@ private fun EpisodeRow(ep: Item, modifier: Modifier, onToggle: () -> Unit, onCli
                 Text(ep.overview, color = TextMuted, maxLines = if (tv) 2 else 3, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
             }
         }
-        // ✓ marca/desmarca o episódio (na TV: seta → a partir da linha)
+    }
+        // ✓ marca/desmarca só este episódio (na TV: seta → a partir da linha)
         val played = Watched.isPlayed(ep)
         Box(
-            Modifier.align(Alignment.CenterVertically).size(44.dp)
+            Modifier.padding(end = 12.dp).size(if (tv) 52.dp else 44.dp)
                 .tvFocus(CircleShape, 1.1f).clip(CircleShape)
                 .background(if (played) Success.copy(alpha = 0.18f) else Color.White.copy(alpha = 0.06f))
                 .clickable(onClick = onToggle),
@@ -335,4 +364,19 @@ private fun EpisodeRow(ep: Item, modifier: Modifier, onToggle: () -> Unit, onCli
 /** Temporada inteira: marca a temporada no servidor e atualiza os episódios exibidos. */
 private fun toggleSeason(scope: CoroutineScope, ctx: Context, season: Item, episodes: List<Item>, played: Boolean, done: () -> Unit) {
     scope.launch { if (Watched.set(ctx, season, played, episodes) != null) done() }
+}
+
+/**
+ * Onde a pessoa parou na série: o episódio começado mais recente; senão o primeiro não visto
+ * depois do último assistido; senão o primeiro não visto; senão o primeiro da série.
+ */
+private fun resumePoint(all: List<Item>): Item? {
+    if (all.isEmpty()) return null
+    val inProgress = all.filter { !Watched.isPlayed(it) && (it.userData?.positionTicks ?: 0L) > 0L }
+        .maxByOrNull { it.userData?.lastPlayed.orEmpty() }
+    if (inProgress != null) return inProgress
+    val lastSeen = all.indices.filter { Watched.isPlayed(all[it]) }
+        .maxByOrNull { all[it].userData?.lastPlayed.orEmpty() }
+    if (lastSeen != null) all.drop(lastSeen + 1).firstOrNull { !Watched.isPlayed(it) }?.let { return it }
+    return all.firstOrNull { !Watched.isPlayed(it) } ?: all.first()
 }

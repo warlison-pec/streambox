@@ -8,8 +8,9 @@ object HomeSections {
     const val ARRIVED = "arrived"
     const val FAVORITES = "favorites"
     const val LATEST = "latest"
+    const val TRENDING = "trending"
 
-    val DEFAULT_ORDER = listOf(RESUME, NEXT_UP, BECAUSE, ARRIVED, FAVORITES, LATEST)
+    val DEFAULT_ORDER = listOf(RESUME, NEXT_UP, TRENDING, BECAUSE, ARRIVED, FAVORITES, LATEST)
 
     fun label(key: String) = when (key) {
         RESUME -> "Continuar assistindo"
@@ -18,6 +19,7 @@ object HomeSections {
         ARRIVED -> "Seu pedido chegou"
         FAVORITES -> "Minha lista"
         LATEST -> "Adicionados recentemente"
+        TRENDING -> "Em alta"
         else -> key
     }
 
@@ -25,6 +27,7 @@ object HomeSections {
         BECAUSE -> "Sugestões pelo gênero e por títulos parecidos com o que você assistiu. Só aparece quando já houver histórico."
         ARRIVED -> "Pedidos seus que já estão no catálogo. Só aparece se você pediu algo."
         LATEST -> "Uma fileira por biblioteca."
+        TRENDING -> "Filmes e séries em alta agora (tendências do TMDB, via Seerr) que já estão no catálogo. Sem Seerr, mostra os lançamentos mais bem avaliados."
         else -> null
     }
 }
