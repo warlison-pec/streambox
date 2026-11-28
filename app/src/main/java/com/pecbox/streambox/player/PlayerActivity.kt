@@ -127,6 +127,9 @@ class PlayerActivity : ComponentActivity() {
         /** Reprodução direta que não começa nesse tempo conta como falha (o aparelho pode travar sem acusar erro). */
         private const val START_TIMEOUT_MS = 20_000L
 
+        /** Vídeo do TorBox: o CDN pode levar vários segundos para servir um trecho fora do cache; espera mais. */
+        private const val TORBOX_START_TIMEOUT_MS = 40_000L
+
         /** Nomes usados pelo indexador para os codecs de vídeo que o aparelho recusou. */
         private val INDEXER_CODECS = mapOf(
             "video/avc" to "h264", "video/hevc" to "hevc", "video/av01" to "av1", "video/x-vnd.on2.vp9" to "vp9",
@@ -162,7 +165,16 @@ class PlayerActivity : ComponentActivity() {
     private var reconnects = 0                 // TV ao vivo: tentativas seguidas de reconexão
     private val stallTask = Runnable { if (isLive && player?.playbackState == Player.STATE_BUFFERING) reconnect("O canal parou de responder") }
     private var loadReady = false              // o endereço carregado por último já começou a tocar
-    private val startTimeout = Runnable { if (!loadReady && !isLive && !currentIsHls) tryOtherSource() }
+    private var loadStartedAt = 0L             // SystemClock.elapsedRealtime() do último load()
+    private val startTimeout: Runnable = object : Runnable {
+        override fun run() {
+            if (loadReady || isLive || currentIsHls) return
+            // as informações da fonte chegam depois do início: só então se sabe se é do TorBox
+            val limit = if (isTorBoxSource(source)) TORBOX_START_TIMEOUT_MS else START_TIMEOUT_MS
+            val waited = SystemClock.elapsedRealtime() - loadStartedAt
+            if (waited < limit) handler.postDelayed(this, limit - waited) else tryOtherSource()
+        }
+    }
     private var verticalMode = false           // botão "Vertical": retrato + vídeo ampliado
     private var lastVideoSize: VideoSize? = null
     private val isTvDevice by lazy {
@@ -219,6 +231,7 @@ class PlayerActivity : ComponentActivity() {
     // A fonte é HLS, mas o endereço direto (/Videos/…/stream) não termina em .m3u8: o ExoPlayer decide o formato
     // pelo endereço e só reconhece a lista se for avisado. Sem isso a reprodução direta falha e cai na conversão.
     private var currentDirectHls = false        // reprodução direta avisando o ExoPlayer que é HLS
+    private var currentIndexerHls = false       // essa reprodução HLS direta vem do indexador, não do Jellyfin
     private var sourceIsHls = false             // a fonte atual é HLS (PlaybackInfo ou erro de formato)
     private var triedDirectHls = false
     private var source: MediaSource? = null // faixas do Jellyfin (legendas, áudio)
@@ -425,6 +438,11 @@ class PlayerActivity : ComponentActivity() {
         lifecycleScope.launch {
             source = runCatching { jf.playbackInfo(id).sources.firstOrNull() }.getOrNull()
             if (isHlsSource(source)) sourceIsHls = true
+            // Fonte HLS: troca já pela lista do indexador, sem esperar o erro do arquivo aberto como vídeo comum
+            if (direct && sourceIsHls && !loadReady && !currentDirectHls && !triedDirectHls && !triedHls && !swappingSource) {
+                triedDirectHls = true
+                load(directHlsUrl(id), startMs, hls = false, m3u8 = true)
+            }
             if (!direct) load(conversionUrl(id), startMs, hls = true)
             restoreTracks()
         }
@@ -524,7 +542,9 @@ class PlayerActivity : ComponentActivity() {
         currentUrl = url
         currentIsHls = hls
         currentDirectHls = m3u8 && !hls
+        currentIndexerHls = currentDirectHls && session.indexer.enabled && url.startsWith(session.indexerUrl.trimEnd('/') + "/hls/")
         loadReady = false
+        loadStartedAt = SystemClock.elapsedRealtime()
         handler.removeCallbacks(startTimeout)
         if (!hls && !isLive) handler.postDelayed(startTimeout, START_TIMEOUT_MS)
         val builder = MediaItem.Builder()
@@ -557,7 +577,7 @@ class PlayerActivity : ComponentActivity() {
         val pos = player?.currentPosition ?: 0
         if (QUALITIES[quality].second == 0 && !triedHls) {
             method = "DirectStream"
-            load(jf.directStreamUrl(id), pos, hls = false, m3u8 = sourceIsHls)
+            load(if (sourceIsHls) directHlsUrl(id) else jf.directStreamUrl(id), pos, hls = false, m3u8 = sourceIsHls)
         } else {
             method = "Transcode"
             lifecycleScope.launch {
@@ -673,6 +693,15 @@ class PlayerActivity : ComponentActivity() {
         .filter { it.type == C.TRACK_TYPE_VIDEO && !it.isSupported(true) }
         .flatMap { group -> (0 until group.length).mapNotNull { INDEXER_CODECS[group.getTrackFormat(it).sampleMimeType] } }
         .distinct()
+
+    /**
+     * Reprodução direta de uma fonte HLS. Pelo indexador quando houver: pelo Jellyfin, os pedaços que o indexador
+     * reescreve (/play/…/s.ts) viram caminhos do Jellyfin, que os recusa, e o vídeo acabava convertido sem precisar.
+     */
+    private fun directHlsUrl(id: String) = session.indexer.hlsUrl(id) ?: jf.directStreamUrl(id)
+
+    /** Vídeo da conta TorBox: o .strm aponta para /play/tbx.<…> do indexador. */
+    private fun isTorBoxSource(src: MediaSource?) = src?.path?.contains("/play/tbx.") == true
 
     /** Erro do próprio formato (leitura, decodificação ou saída de áudio): repetir o mesmo arquivo não resolve. */
     private fun isFormatError(code: Int) = code in 3000..5999
@@ -791,7 +820,15 @@ class PlayerActivity : ComponentActivity() {
                 triedDirectHls = true
                 sourceIsHls = true
                 val pos = p.currentPosition.coerceAtLeast(intent.getLongExtra(EXTRA_START_TICKS, 0L) / TICKS_PER_MS)
-                load(currentUrl, pos, hls = false, m3u8 = true)
+                load(itemId?.let(::directHlsUrl) ?: currentUrl, pos, hls = false, m3u8 = true)
+                return
+            }
+            // Lista do indexador recusada (item que não é dele, sessão vencida): volta para a lista pelo Jellyfin,
+            // que serve fontes HLS com endereços completos
+            if (currentIndexerHls && (isFormatError(error.errorCode) || error.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS)) {
+                val id = itemId ?: return
+                val pos = p.currentPosition.coerceAtLeast(intent.getLongExtra(EXTRA_START_TICKS, 0L) / TICKS_PER_MS)
+                load(jf.directStreamUrl(id), pos, hls = false, m3u8 = true)
                 return
             }
             // HLS direto com pedaço recusado (endereços relativos que só valem no indexador): não adianta insistir

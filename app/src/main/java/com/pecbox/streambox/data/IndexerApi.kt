@@ -50,6 +50,16 @@ class IndexerApi(private val s: Session) {
         return AppJson.decodeFromString(RequestStatus.serializer(), text)
     }
 
+    /**
+     * Lista HLS do item servida pelo próprio indexador, para tocar sem passar pelo Jellyfin (que recusa os pedaços
+     * reescritos pelo indexador). O token vai na URL porque o player não envia cabeçalhos; null sem indexador.
+     */
+    fun hlsUrl(itemId: String): String? {
+        if (!enabled) return null
+        return (s.indexerUrl.trimEnd('/') + "/hls/" + itemId.replace("-", "")).toHttpUrl().newBuilder()
+            .addQueryParameter("t", s.token).build().toString()
+    }
+
     /** A fonte atual não tocou neste aparelho: pede ao indexador que troque por outra do mesmo conteúdo. */
     suspend fun nextSource(itemId: String, codecs: List<String>): SourceSwitch {
         val body = buildJsonObject {
